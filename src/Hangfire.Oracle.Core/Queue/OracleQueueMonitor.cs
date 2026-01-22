@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using Dapper;
 
 namespace Hangfire.Oracle.Core.Queue;
@@ -36,7 +33,9 @@ internal sealed class OracleQueueMonitor : IQueueMonitor
     public QueueStatistics GetStatistics(string queue)
     {
         if (string.IsNullOrEmpty(queue))
+        {
             throw new ArgumentNullException(nameof(queue));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
         var queueTableName = _storage.GetTableName("JOB_QUEUE");
@@ -59,7 +58,9 @@ internal sealed class OracleQueueMonitor : IQueueMonitor
     public IReadOnlyList<long> GetEnqueuedJobIds(string queue, int offset, int limit)
     {
         if (string.IsNullOrEmpty(queue))
+        {
             throw new ArgumentNullException(nameof(queue));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
         var queueTableName = _storage.GetTableName("JOB_QUEUE");
@@ -79,7 +80,9 @@ internal sealed class OracleQueueMonitor : IQueueMonitor
     public IReadOnlyList<long> GetFetchedJobIds(string queue, int offset, int limit)
     {
         if (string.IsNullOrEmpty(queue))
+        {
             throw new ArgumentNullException(nameof(queue));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
         var queueTableName = _storage.GetTableName("JOB_QUEUE");

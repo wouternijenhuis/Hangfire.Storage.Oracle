@@ -1,6 +1,3 @@
-using System;
-using Hangfire;
-
 namespace Hangfire.Oracle.Core;
 
 /// <summary>
@@ -18,8 +15,15 @@ public static class OracleStorageExtensions
         this IGlobalConfiguration configuration,
         string connectionString)
     {
-        if (configuration == null) throw new ArgumentNullException(nameof(configuration));
-        if (connectionString == null) throw new ArgumentNullException(nameof(connectionString));
+        if (configuration == null)
+        {
+            throw new ArgumentNullException(nameof(configuration));
+        }
+
+        if (connectionString == null)
+        {
+            throw new ArgumentNullException(nameof(connectionString));
+        }
 
         var storage = new OracleStorage(connectionString);
         return configuration.UseStorage(storage);
@@ -37,9 +41,20 @@ public static class OracleStorageExtensions
         string connectionString,
         OracleStorageOptions options)
     {
-        if (configuration == null) throw new ArgumentNullException(nameof(configuration));
-        if (connectionString == null) throw new ArgumentNullException(nameof(connectionString));
-        if (options == null) throw new ArgumentNullException(nameof(options));
+        if (configuration == null)
+        {
+            throw new ArgumentNullException(nameof(configuration));
+        }
+
+        if (connectionString == null)
+        {
+            throw new ArgumentNullException(nameof(connectionString));
+        }
+
+        if (options == null)
+        {
+            throw new ArgumentNullException(nameof(options));
+        }
 
         var storage = new OracleStorage(connectionString, options);
         return configuration.UseStorage(storage);

@@ -1,12 +1,7 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading;
 using Dapper;
 using Hangfire.Common;
 using Hangfire.Server;
 using Hangfire.Storage;
-using Oracle.ManagedDataAccess.Client;
 
 namespace Hangfire.Oracle.Core;
 
@@ -17,21 +12,25 @@ public class OracleStorageConnection : JobStorageConnection
 {
     private readonly OracleStorage _storage;
 
+    /// <inheritdoc/>
     public OracleStorageConnection(OracleStorage storage)
     {
         _storage = storage ?? throw new ArgumentNullException(nameof(storage));
     }
 
+    /// <inheritdoc/>
     public override IWriteOnlyTransaction CreateWriteTransaction()
     {
         return new OracleWriteOnlyTransaction(_storage);
     }
 
+    /// <inheritdoc/>
     public override IDisposable AcquireDistributedLock(string resource, TimeSpan timeout)
     {
         return new OracleDistributedLock(_storage, resource, timeout);
     }
 
+    /// <inheritdoc/>
     public override IFetchedJob FetchNextJob(string[] queues, CancellationToken cancellationToken)
     {
         if (queues == null || queues.Length == 0)
@@ -42,7 +41,7 @@ public class OracleStorageConnection : JobStorageConnection
         var providers = queues.Select(queue => new OracleJobQueue(_storage, queue)).ToArray();
 
         var fetchedJob = default(IFetchedJob);
-        
+
         // This is an intentional infinite loop that continuously polls for jobs
         // It only exits when:
         // 1. A job is successfully fetched, or
@@ -70,6 +69,7 @@ public class OracleStorageConnection : JobStorageConnection
         return fetchedJob;
     }
 
+    /// <inheritdoc/>
     public override string CreateExpiredJob(Job job, IDictionary<string, string> parameters, DateTime createdAt, TimeSpan expireIn)
     {
         if (job == null)
@@ -115,6 +115,7 @@ public class OracleStorageConnection : JobStorageConnection
         return jobId.ToString();
     }
 
+    /// <inheritdoc/>
     public override JobData? GetJobData(string jobId)
     {
         if (jobId == null)
@@ -165,6 +166,7 @@ public class OracleStorageConnection : JobStorageConnection
         };
     }
 
+    /// <inheritdoc/>
     public override StateData? GetStateData(string jobId)
     {
         if (jobId == null)
@@ -195,6 +197,7 @@ public class OracleStorageConnection : JobStorageConnection
         };
     }
 
+    /// <inheritdoc/>
     public override void SetJobParameter(string id, string name, string? value)
     {
         if (id == null)
@@ -219,6 +222,7 @@ public class OracleStorageConnection : JobStorageConnection
             new { jobId = long.Parse(id), name, value });
     }
 
+    /// <inheritdoc/>
     public override string? GetJobParameter(string id, string name)
     {
         if (id == null)
@@ -239,6 +243,7 @@ public class OracleStorageConnection : JobStorageConnection
             new { jobId = long.Parse(id), name });
     }
 
+    /// <inheritdoc/>
     public override HashSet<string> GetAllItemsFromSet(string key)
     {
         if (key == null)
@@ -256,6 +261,7 @@ public class OracleStorageConnection : JobStorageConnection
         return new HashSet<string>(result);
     }
 
+    /// <inheritdoc/>
     public override string? GetFirstByLowestScoreFromSet(string key, double fromScore, double toScore)
     {
         if (key == null)
@@ -275,6 +281,7 @@ public class OracleStorageConnection : JobStorageConnection
             .SingleOrDefault();
     }
 
+    /// <inheritdoc/>
     public override long GetCounter(string key)
     {
         if (key == null)
@@ -292,6 +299,7 @@ public class OracleStorageConnection : JobStorageConnection
         return result ?? 0;
     }
 
+    /// <inheritdoc/>
     public override long GetSetCount(string key)
     {
         if (key == null)
@@ -307,6 +315,7 @@ public class OracleStorageConnection : JobStorageConnection
             new { key });
     }
 
+    /// <inheritdoc/>
     public override List<string> GetRangeFromSet(string key, int startingFrom, int endingAt)
     {
         if (key == null)
@@ -328,6 +337,7 @@ public class OracleStorageConnection : JobStorageConnection
         return result.ToList();
     }
 
+    /// <inheritdoc/>
     public override TimeSpan GetSetTtl(string key)
     {
         if (key == null)
@@ -350,6 +360,7 @@ public class OracleStorageConnection : JobStorageConnection
         return result.Value - DateTime.UtcNow;
     }
 
+    /// <inheritdoc/>
     public override long GetHashCount(string key)
     {
         if (key == null)
@@ -365,6 +376,7 @@ public class OracleStorageConnection : JobStorageConnection
             new { key });
     }
 
+    /// <inheritdoc/>
     public override TimeSpan GetHashTtl(string key)
     {
         if (key == null)
@@ -387,6 +399,7 @@ public class OracleStorageConnection : JobStorageConnection
         return result.Value - DateTime.UtcNow;
     }
 
+    /// <inheritdoc/>
     public override string? GetValueFromHash(string key, string name)
     {
         if (key == null)
@@ -407,6 +420,7 @@ public class OracleStorageConnection : JobStorageConnection
             new { key, field = name });
     }
 
+    /// <inheritdoc/>
     public override long GetListCount(string key)
     {
         if (key == null)
@@ -422,6 +436,7 @@ public class OracleStorageConnection : JobStorageConnection
             new { key });
     }
 
+    /// <inheritdoc/>
     public override TimeSpan GetListTtl(string key)
     {
         if (key == null)
@@ -444,6 +459,7 @@ public class OracleStorageConnection : JobStorageConnection
         return result.Value - DateTime.UtcNow;
     }
 
+    /// <inheritdoc/>
     public override List<string> GetRangeFromList(string key, int startingFrom, int endingAt)
     {
         if (key == null)
@@ -465,6 +481,7 @@ public class OracleStorageConnection : JobStorageConnection
         return result.ToList();
     }
 
+    /// <inheritdoc/>
     public override List<string> GetAllItemsFromList(string key)
     {
         if (key == null)
@@ -483,6 +500,7 @@ public class OracleStorageConnection : JobStorageConnection
         return result.ToList();
     }
 
+    /// <inheritdoc/>
     public override Dictionary<string, string> GetAllEntriesFromHash(string key)
     {
         if (key == null)
@@ -503,6 +521,7 @@ public class OracleStorageConnection : JobStorageConnection
         return result;
     }
 
+    /// <inheritdoc/>
     public override void SetRangeInHash(string key, IEnumerable<KeyValuePair<string, string>> keyValuePairs)
     {
         if (key == null)
@@ -542,6 +561,7 @@ public class OracleStorageConnection : JobStorageConnection
         }
     }
 
+    /// <inheritdoc/>
     public override void AnnounceServer(string serverId, ServerContext context)
     {
         if (serverId == null)
@@ -573,6 +593,7 @@ public class OracleStorageConnection : JobStorageConnection
             new { id = serverId, data, now = DateTime.UtcNow });
     }
 
+    /// <inheritdoc/>
     public override void RemoveServer(string serverId)
     {
         if (serverId == null)
@@ -588,6 +609,7 @@ public class OracleStorageConnection : JobStorageConnection
             new { id = serverId });
     }
 
+    /// <inheritdoc/>
     public override void Heartbeat(string serverId)
     {
         if (serverId == null)
@@ -604,6 +626,7 @@ public class OracleStorageConnection : JobStorageConnection
             new { id = serverId, now = DateTime.UtcNow });
     }
 
+    /// <inheritdoc/>
     public override int RemoveTimedOutServers(TimeSpan timeOut)
     {
         if (timeOut.Duration() != timeOut)

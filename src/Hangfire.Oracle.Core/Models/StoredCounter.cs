@@ -1,5 +1,3 @@
-using System;
-
 namespace Hangfire.Oracle.Core.Models;
 
 /// <summary>

@@ -1,6 +1,3 @@
-using System;
-using System.Linq;
-using System.Threading;
 using Dapper;
 using Hangfire.Logging;
 using Hangfire.Storage;
@@ -13,7 +10,7 @@ namespace Hangfire.Oracle.Core;
 /// </summary>
 public sealed class OracleJobQueue
 {
-    private static readonly ILog Logger = LogProvider.GetLogger(typeof(OracleJobQueue));
+    private static readonly ILog _logger = LogProvider.GetLogger(typeof(OracleJobQueue));
 
     private readonly OracleStorage _storage;
     private readonly OracleStorageOptions _options;
@@ -47,6 +44,8 @@ public sealed class OracleJobQueue
     /// </summary>
     private IFetchedJob? DequeueWithSkipLocked(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         using var connection = _storage.CreateAndOpenConnection();
         using var transaction = connection.BeginTransaction();
 
@@ -82,7 +81,7 @@ public sealed class OracleJobQueue
 
             transaction.Commit();
 
-            Logger.TraceFormat("Dequeued job {0} from queue '{1}' using SKIP LOCKED", jobQueue.JobId, _queue);
+            _logger.TraceFormat("Dequeued job {0} from queue '{1}' using SKIP LOCKED", jobQueue.JobId, _queue);
 
             return new OracleFetchedJob(_storage, jobQueue.Id, jobQueue.JobId.ToString(), _queue);
         }
@@ -99,6 +98,8 @@ public sealed class OracleJobQueue
     /// </summary>
     private IFetchedJob? DequeueClassic(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         using var connection = _storage.CreateAndOpenConnection();
         using var transaction = connection.BeginTransaction();
 
@@ -165,7 +166,7 @@ public sealed class OracleJobQueue
 
             transaction.Commit();
 
-            Logger.TraceFormat("Dequeued job {0} from queue '{1}' using classic locking", jobQueue.JobId, _queue);
+            _logger.TraceFormat("Dequeued job {0} from queue '{1}' using classic locking", jobQueue.JobId, _queue);
 
             return new OracleFetchedJob(_storage, jobQueue.Id, jobQueue.JobId.ToString(), _queue);
         }

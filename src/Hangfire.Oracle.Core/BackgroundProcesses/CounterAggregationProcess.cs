@@ -1,5 +1,3 @@
-using System;
-using System.Threading;
 using Dapper;
 using Hangfire.Logging;
 using Hangfire.Server;
@@ -14,8 +12,8 @@ namespace Hangfire.Oracle.Core.BackgroundProcesses;
 internal sealed class CounterAggregationProcess : IServerComponent
 #pragma warning restore CS0618
 {
-    private static readonly ILog Logger = LogProvider.GetLogger(typeof(CounterAggregationProcess));
-    
+    private static readonly ILog _logger = LogProvider.GetLogger(typeof(CounterAggregationProcess));
+
     private readonly OracleStorage _storage;
     private readonly TimeSpan _aggregationInterval;
     private readonly int _batchSize;
@@ -41,7 +39,7 @@ internal sealed class CounterAggregationProcess : IServerComponent
     /// </summary>
     public void Execute(CancellationToken cancellationToken)
     {
-        Logger.Debug("Starting counter aggregation...");
+        _logger.Debug("Starting counter aggregation...");
 
         var totalAggregated = 0;
         int batchAggregated;
@@ -62,7 +60,7 @@ internal sealed class CounterAggregationProcess : IServerComponent
 
         if (totalAggregated > 0)
         {
-            Logger.InfoFormat("Aggregated {0} counter records.", totalAggregated);
+            _logger.InfoFormat("Aggregated {0} counter records.", totalAggregated);
         }
 
         // Wait for next aggregation cycle
@@ -127,7 +125,7 @@ internal sealed class CounterAggregationProcess : IServerComponent
         }
         catch (Exception ex)
         {
-            Logger.WarnException("Error during counter aggregation batch.", ex);
+            _logger.WarnException("Error during counter aggregation batch.", ex);
             return 0;
         }
     }

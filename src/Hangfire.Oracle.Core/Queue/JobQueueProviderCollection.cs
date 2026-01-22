@@ -1,6 +1,4 @@
-using System;
 using System.Collections;
-using System.Collections.Generic;
 
 namespace Hangfire.Oracle.Core.Queue;
 
@@ -30,14 +28,21 @@ public sealed class JobQueueProviderCollection : IEnumerable<IJobQueueProvider>
     public void Register(IJobQueueProvider provider, params string[] queues)
     {
         if (provider == null)
+        {
             throw new ArgumentNullException(nameof(provider));
+        }
+
         if (queues == null || queues.Length == 0)
+        {
             throw new ArgumentException("At least one queue name must be specified.", nameof(queues));
+        }
 
         foreach (var queue in queues)
         {
             if (string.IsNullOrWhiteSpace(queue))
+            {
                 throw new ArgumentException("Queue name cannot be empty.", nameof(queues));
+            }
 
             _providers[queue] = provider;
         }
@@ -52,7 +57,9 @@ public sealed class JobQueueProviderCollection : IEnumerable<IJobQueueProvider>
     public IJobQueueProvider GetProvider(string queue)
     {
         if (string.IsNullOrEmpty(queue))
+        {
             return _defaultProvider;
+        }
 
         return _providers.TryGetValue(queue, out var provider) ? provider : _defaultProvider;
     }
@@ -62,6 +69,7 @@ public sealed class JobQueueProviderCollection : IEnumerable<IJobQueueProvider>
     /// </summary>
     public IJobQueueProvider DefaultProvider => _defaultProvider;
 
+    /// <inheritdoc/>
     public IEnumerator<IJobQueueProvider> GetEnumerator()
     {
         var seen = new HashSet<IJobQueueProvider> { _defaultProvider };
@@ -70,7 +78,9 @@ public sealed class JobQueueProviderCollection : IEnumerable<IJobQueueProvider>
         foreach (var provider in _providers.Values)
         {
             if (seen.Add(provider))
+            {
                 yield return provider;
+            }
         }
     }
 

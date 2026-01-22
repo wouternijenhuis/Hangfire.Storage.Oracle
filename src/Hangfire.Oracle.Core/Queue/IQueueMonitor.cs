@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace Hangfire.Oracle.Core.Queue;
 
 /// <summary>

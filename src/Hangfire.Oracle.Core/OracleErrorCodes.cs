@@ -1,4 +1,3 @@
-using System;
 using Oracle.ManagedDataAccess.Client;
 
 namespace Hangfire.Oracle.Core;
