@@ -216,14 +216,27 @@ public class OracleMonitoringApi : IMonitoringApi
             $@"SELECT ID, DATA, LAST_HEARTBEAT
                FROM {_storage.GetTableName("SERVER")}");
 
-        return servers.Select(x => new ServerDto
+        return servers.Select(x =>
         {
-            Name = x.ID,
-            Heartbeat = x.LAST_HEARTBEAT,
-            Queues = JobHelper.FromJson<string[]>(x.DATA) ?? Array.Empty<string>(),
-            StartedAt = DateTime.MinValue,
-            WorkersCount = 0
+            var serverData = JobHelper.FromJson<ServerData>(x.DATA);
+            
+            return new ServerDto
+            {
+                Name = x.ID,
+                Heartbeat = x.LAST_HEARTBEAT,
+                Queues = serverData?.Queues ?? Array.Empty<string>(),
+                StartedAt = serverData?.StartedAt ?? DateTime.MinValue,
+                WorkersCount = serverData?.WorkerCount ?? 0
+            };
         }).ToList();
+    }
+
+    // Helper class to deserialize server data
+    private class ServerData
+    {
+        public int WorkerCount { get; set; }
+        public string[] Queues { get; set; } = Array.Empty<string>();
+        public DateTime StartedAt { get; set; }
     }
 
     public IList<QueueWithTopEnqueuedJobsDto> Queues()
