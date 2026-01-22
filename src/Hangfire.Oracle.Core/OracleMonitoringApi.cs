@@ -134,12 +134,15 @@ public class OracleMonitoringApi : IMonitoringApi
     public JobList<DeletedJobDto> DeletedJobs(int from, int count)
     {
         return GetJobs<DeletedJobDto>(from, count, "Deleted",
-            (job, state) => new DeletedJobDto
+            (job, state) =>
             {
-                Job = job,
-                DeletedAt = JobHelper.DeserializeDateTime(state.Data.ContainsKey("DeletedAt") 
-                    ? state.Data["DeletedAt"] 
-                    : null)
+                state.Data.TryGetValue("DeletedAt", out var deletedAt);
+
+                return new DeletedJobDto
+                {
+                    Job = job,
+                    DeletedAt = JobHelper.DeserializeDateTime(deletedAt)
+                };
             });
     }
 
