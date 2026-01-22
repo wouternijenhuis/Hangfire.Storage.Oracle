@@ -379,9 +379,38 @@ public class OracleMonitoringApi : IMonitoringApi
             var invocationData = JobHelper.FromJson<InvocationData>(job.INVOCATION_DATA);
             invocationData.Arguments = job.ARGUMENTS;
 
+            var deserializedJob = default(Job);
+            try
+            {
+                deserializedJob = invocationData.DeserializeJob();
+            }
+            catch
+            {
+                // Job deserialization failed
+            }
+
+            object dto;
+
+            if (typeof(T) == typeof(EnqueuedJobDto))
+            {
+                var enqueuedDto = new EnqueuedJobDto
+                {
+                    Job = deserializedJob,
+                    State = job.STATE_NAME,
+                    InEnqueuedState = string.Equals(job.STATE_NAME, stateName, StringComparison.OrdinalIgnoreCase),
+                    EnqueuedAt = job.CREATED_AT
+                };
+
+                dto = enqueuedDto;
+            }
+            else
+            {
+                dto = new T();
+            }
+
             return new KeyValuePair<string, T>(
                 job.ID.ToString(),
-                new T()
+                (T)dto
             );
         }).ToList());
     }
