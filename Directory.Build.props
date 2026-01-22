@@ -1,0 +1,52 @@
+<Project>
+  <!--
+    Directory.Build.props
+    This file is automatically imported by MSBuild for all projects in this directory and subdirectories.
+    It defines common properties shared across all projects in the solution.
+    
+    For more information, see:
+    https://learn.microsoft.com/en-us/visualstudio/msbuild/customize-by-directory
+  -->
+
+  <!-- Common build settings for all projects -->
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- Deterministic builds for reproducibility -->
+  <PropertyGroup>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <!-- Package metadata - shared across all packable projects -->
+  <PropertyGroup>
+    <Authors>Wouter Nijenhuis</Authors>
+    <Company>Wouter Nijenhuis</Company>
+    <Copyright>Copyright © $([System.DateTime]::Now.Year) Wouter Nijenhuis</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/wouternijenhuis/Hangfire.Storage.Oracle</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/wouternijenhuis/Hangfire.Storage.Oracle</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <!-- Symbol package settings for debugging support -->
+  <PropertyGroup>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+  <!-- Default to not packable - individual projects opt in -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>
