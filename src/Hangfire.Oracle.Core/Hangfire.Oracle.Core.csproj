@@ -4,7 +4,28 @@
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    
+    <!-- Package metadata -->
+    <PackageId>Hangfire.Oracle.Core</PackageId>
+    <Title>Hangfire Oracle Storage Provider</Title>
+    <Description>Hangfire storage provider implementation for Oracle Database using Oracle.ManagedDataAccess.Core and Dapper</Description>
+    <Authors>Wouter Nijenhuis</Authors>
+    <Company>Wouter Nijenhuis</Company>
+    <Copyright>Copyright © 2026</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/wouternijenhuis/Hangfire.Storage.Oracle</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/wouternijenhuis/Hangfire.Storage.Oracle</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>hangfire;oracle;storage;background-jobs;job-scheduling;dapper</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.66" />
