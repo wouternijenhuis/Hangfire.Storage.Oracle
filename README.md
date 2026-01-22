@@ -1,4 +1,4 @@
-# Hangfire.Oracle.Core
+# DevDad.Hangfire.Oracle
 
 A Hangfire storage provider implementation for Oracle Database using Oracle.ManagedDataAccess.Core and Dapper.
 
@@ -35,13 +35,13 @@ A Hangfire storage provider implementation for Oracle Database using Oracle.Mana
 Add the package reference to your project:
 
 ```xml
-<PackageReference Include="Hangfire.Oracle.Core" Version="1.0.0" />
+<PackageReference Include="DevDad.Hangfire.Oracle" Version="1.0.0" />
 ```
 
 Or via Package Manager Console:
 
 ```powershell
-Install-Package Hangfire.Oracle.Core
+Install-Package DevDad.Hangfire.Oracle
 ```
 
 ## Usage
@@ -50,7 +50,7 @@ Install-Package Hangfire.Oracle.Core
 
 ```csharp
 using Hangfire;
-using Hangfire.Oracle.Core;
+using DevDad.Hangfire.Oracle;
 
 // Configure Hangfire to use Oracle storage
 GlobalConfiguration.Configuration
@@ -61,7 +61,7 @@ GlobalConfiguration.Configuration
 
 ```csharp
 using Hangfire;
-using Hangfire.Oracle.Core;
+using DevDad.Hangfire.Oracle;
 
 var options = new OracleStorageOptions
 {
@@ -103,7 +103,7 @@ GlobalConfiguration.Configuration
 
 ```csharp
 using Hangfire;
-using Hangfire.Oracle.Core;
+using DevDad.Hangfire.Oracle;
 
 var builder = WebApplication.CreateBuilder(args);
 

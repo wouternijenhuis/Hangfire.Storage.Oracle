@@ -11,10 +11,10 @@
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     
     <!-- Package-specific metadata -->
-    <PackageId>Hangfire.Storage.Oracle</PackageId>
+    <PackageId>DevDad.Hangfire.Oracle</PackageId>
     <Title>Hangfire Oracle Storage Provider</Title>
     <Description>Hangfire storage provider implementation for Oracle Database using Oracle.ManagedDataAccess.Core and Dapper. Provides reliable job persistence with background processes for maintenance.</Description>
-    <PackageTags>hangfire;oracle;storage;background-jobs;job-scheduling;dapper;distributed-lock</PackageTags>
+    <PackageTags>hangfire;oracle;storage;background-jobs;job-scheduling;dapper;distributed-lock;devdad</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>
