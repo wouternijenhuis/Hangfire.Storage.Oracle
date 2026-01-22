@@ -1,6 +1,3 @@
-using Xunit;
-using System;
-
 namespace Hangfire.Oracle.Core.Tests;
 
 public class OracleStorageTests
@@ -73,8 +70,10 @@ public class OracleStorageTests
         // Act
         var result = storage.ConnectionString;
 
-        // Assert
-        Assert.Equal(connectionString, result);
+        // Assert - connection string is enhanced with pooling settings
+        Assert.Contains("DATA SOURCE=test", result, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("USER ID=user", result, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PASSWORD=pass", result, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

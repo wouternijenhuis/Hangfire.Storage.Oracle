@@ -7,6 +7,9 @@
 
   <PropertyGroup>
     <IsTestProject>true</IsTestProject>
+    <!-- Enable documentation file generation for IDE0005 detection, but suppress CS1591 for test projects -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>CS1591</NoWarn>
   </PropertyGroup>
 
   <!-- Test framework dependencies (versions from Directory.Packages.props) -->

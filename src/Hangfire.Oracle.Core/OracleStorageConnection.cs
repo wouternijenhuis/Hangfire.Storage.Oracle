@@ -35,7 +35,9 @@ public class OracleStorageConnection : JobStorageConnection
     public override IFetchedJob FetchNextJob(string[] queues, CancellationToken cancellationToken)
     {
         if (queues == null || queues.Length == 0)
+        {
             throw new ArgumentNullException(nameof(queues));
+        }
 
         var providers = queues.Select(queue => new OracleJobQueue(_storage, queue)).ToArray();
 
@@ -54,7 +56,9 @@ public class OracleStorageConnection : JobStorageConnection
             {
                 fetchedJob = provider.Dequeue(cancellationToken);
                 if (fetchedJob != null)
+                {
                     break;
+                }
             }
 
             if (fetchedJob == null)
@@ -68,7 +72,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override string CreateExpiredJob(Job job, IDictionary<string, string> parameters, DateTime createdAt, TimeSpan expireIn)
     {
-        if (job == null) throw new ArgumentNullException(nameof(job));
+        if (job == null)
+        {
+            throw new ArgumentNullException(nameof(job));
+        }
 
         var invocationData = InvocationData.SerializeJob(job);
 
@@ -81,9 +88,9 @@ public class OracleStorageConnection : JobStorageConnection
                VALUES ({_storage.GetTableName("JOB_SEQ")}.NEXTVAL, :invocationData, :arguments, :createdAt, :expireAt)",
             new
             {
-                invocationData = JobHelper.ToJson(invocationData),
+                invocationData = SerializationHelper.Serialize(invocationData, SerializationOption.User),
                 arguments = invocationData.Arguments,
-                createdAt = createdAt,
+                createdAt,
                 expireAt = createdAt.Add(expireIn)
             },
             transaction: transaction);
@@ -108,9 +115,12 @@ public class OracleStorageConnection : JobStorageConnection
         return jobId.ToString();
     }
 
-    public override JobData GetJobData(string jobId)
+    public override JobData? GetJobData(string jobId)
     {
-        if (jobId == null) throw new ArgumentNullException(nameof(jobId));
+        if (jobId == null)
+        {
+            throw new ArgumentNullException(nameof(jobId));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -122,13 +132,20 @@ public class OracleStorageConnection : JobStorageConnection
             .SingleOrDefault();
 
         if (jobData == null)
+        {
             return null;
+        }
 
-        var invocationData = JobHelper.FromJson<InvocationData>(jobData.INVOCATION_DATA);
+        var invocationData = SerializationHelper.Deserialize<InvocationData>(jobData.INVOCATION_DATA, SerializationOption.User);
+        if (invocationData == null)
+        {
+            return null;
+        }
+
         invocationData.Arguments = jobData.ARGUMENTS;
 
-        Job job = null;
-        JobLoadException loadException = null;
+        Job? job = null;
+        JobLoadException? loadException = null;
 
         try
         {
@@ -148,9 +165,12 @@ public class OracleStorageConnection : JobStorageConnection
         };
     }
 
-    public override StateData GetStateData(string jobId)
+    public override StateData? GetStateData(string jobId)
     {
-        if (jobId == null) throw new ArgumentNullException(nameof(jobId));
+        if (jobId == null)
+        {
+            throw new ArgumentNullException(nameof(jobId));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -163,20 +183,29 @@ public class OracleStorageConnection : JobStorageConnection
             .SingleOrDefault();
 
         if (stateData == null)
+        {
             return null;
+        }
 
         return new StateData
         {
             Name = stateData.NAME,
             Reason = stateData.REASON,
-            Data = JobHelper.FromJson<Dictionary<string, string>>(stateData.DATA)
+            Data = SerializationHelper.Deserialize<Dictionary<string, string>>(stateData.DATA, SerializationOption.User) ?? new Dictionary<string, string>()
         };
     }
 
-    public override void SetJobParameter(string id, string name, string value)
+    public override void SetJobParameter(string id, string name, string? value)
     {
-        if (id == null) throw new ArgumentNullException(nameof(id));
-        if (name == null) throw new ArgumentNullException(nameof(name));
+        if (id == null)
+        {
+            throw new ArgumentNullException(nameof(id));
+        }
+
+        if (name == null)
+        {
+            throw new ArgumentNullException(nameof(name));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -190,14 +219,21 @@ public class OracleStorageConnection : JobStorageConnection
             new { jobId = long.Parse(id), name, value });
     }
 
-    public override string GetJobParameter(string id, string name)
+    public override string? GetJobParameter(string id, string name)
     {
-        if (id == null) throw new ArgumentNullException(nameof(id));
-        if (name == null) throw new ArgumentNullException(nameof(name));
+        if (id == null)
+        {
+            throw new ArgumentNullException(nameof(id));
+        }
+
+        if (name == null)
+        {
+            throw new ArgumentNullException(nameof(name));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
-        return connection.ExecuteScalar<string>(
+        return connection.ExecuteScalar<string?>(
             $@"SELECT VALUE FROM {_storage.GetTableName("JOB_PARAMETER")}
                WHERE JOB_ID = :jobId AND NAME = :name",
             new { jobId = long.Parse(id), name });
@@ -205,7 +241,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override HashSet<string> GetAllItemsFromSet(string key)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -217,13 +256,16 @@ public class OracleStorageConnection : JobStorageConnection
         return new HashSet<string>(result);
     }
 
-    public override string GetFirstByLowestScoreFromSet(string key, double fromScore, double toScore)
+    public override string? GetFirstByLowestScoreFromSet(string key, double fromScore, double toScore)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
-        return connection.Query<string>(
+        return connection.Query<string?>(
             $@"SELECT VALUE FROM (
                  SELECT VALUE FROM {_storage.GetTableName("SET")}
                  WHERE KEY_NAME = :key AND SCORE BETWEEN :from AND :to
@@ -235,7 +277,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override long GetCounter(string key)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -249,7 +294,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override long GetSetCount(string key)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -261,7 +309,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override List<string> GetRangeFromSet(string key, int startingFrom, int endingAt)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -279,7 +330,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override TimeSpan GetSetTtl(string key)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -289,14 +343,19 @@ public class OracleStorageConnection : JobStorageConnection
             new { key });
 
         if (!result.HasValue)
+        {
             return TimeSpan.FromSeconds(-1);
+        }
 
         return result.Value - DateTime.UtcNow;
     }
 
     public override long GetHashCount(string key)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -308,7 +367,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override TimeSpan GetHashTtl(string key)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -318,19 +380,28 @@ public class OracleStorageConnection : JobStorageConnection
             new { key });
 
         if (!result.HasValue)
+        {
             return TimeSpan.FromSeconds(-1);
+        }
 
         return result.Value - DateTime.UtcNow;
     }
 
-    public override string GetValueFromHash(string key, string name)
+    public override string? GetValueFromHash(string key, string name)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
-        if (name == null) throw new ArgumentNullException(nameof(name));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
+
+        if (name == null)
+        {
+            throw new ArgumentNullException(nameof(name));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
-        return connection.ExecuteScalar<string>(
+        return connection.ExecuteScalar<string?>(
             $@"SELECT VALUE FROM {_storage.GetTableName("HASH")}
                WHERE KEY_NAME = :key AND FIELD = :field",
             new { key, field = name });
@@ -338,7 +409,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override long GetListCount(string key)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -350,7 +424,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override TimeSpan GetListTtl(string key)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -360,14 +437,19 @@ public class OracleStorageConnection : JobStorageConnection
             new { key });
 
         if (!result.HasValue)
+        {
             return TimeSpan.FromSeconds(-1);
+        }
 
         return result.Value - DateTime.UtcNow;
     }
 
     public override List<string> GetRangeFromList(string key, int startingFrom, int endingAt)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -385,7 +467,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override List<string> GetAllItemsFromList(string key)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -400,7 +485,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override Dictionary<string, string> GetAllEntriesFromHash(string key)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -417,8 +505,15 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override void SetRangeInHash(string key, IEnumerable<KeyValuePair<string, string>> keyValuePairs)
     {
-        if (key == null) throw new ArgumentNullException(nameof(key));
-        if (keyValuePairs == null) throw new ArgumentNullException(nameof(keyValuePairs));
+        if (key == null)
+        {
+            throw new ArgumentNullException(nameof(key));
+        }
+
+        if (keyValuePairs == null)
+        {
+            throw new ArgumentNullException(nameof(keyValuePairs));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
         using var transaction = connection.BeginTransaction();
@@ -449,17 +544,24 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override void AnnounceServer(string serverId, ServerContext context)
     {
-        if (serverId == null) throw new ArgumentNullException(nameof(serverId));
-        if (context == null) throw new ArgumentNullException(nameof(context));
+        if (serverId == null)
+        {
+            throw new ArgumentNullException(nameof(serverId));
+        }
+
+        if (context == null)
+        {
+            throw new ArgumentNullException(nameof(context));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
-        var data = JobHelper.ToJson(new
+        var data = SerializationHelper.Serialize(new
         {
             context.WorkerCount,
             context.Queues,
             StartedAt = DateTime.UtcNow
-        });
+        }, SerializationOption.User);
 
         connection.Execute(
             $@"MERGE INTO {_storage.GetTableName("SERVER")} s
@@ -473,7 +575,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override void RemoveServer(string serverId)
     {
-        if (serverId == null) throw new ArgumentNullException(nameof(serverId));
+        if (serverId == null)
+        {
+            throw new ArgumentNullException(nameof(serverId));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -485,7 +590,10 @@ public class OracleStorageConnection : JobStorageConnection
 
     public override void Heartbeat(string serverId)
     {
-        if (serverId == null) throw new ArgumentNullException(nameof(serverId));
+        if (serverId == null)
+        {
+            throw new ArgumentNullException(nameof(serverId));
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
 

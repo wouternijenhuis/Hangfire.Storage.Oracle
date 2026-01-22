@@ -1,6 +1,3 @@
-using Xunit;
-using System;
-
 namespace Hangfire.Oracle.Core.Tests;
 
 public class OracleMonitoringApiTests

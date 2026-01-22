@@ -1,7 +1,3 @@
-using Xunit;
-using System;
-using Hangfire.Storage;
-
 namespace Hangfire.Oracle.Core.Tests;
 
 public class OracleStorageConnectionTests

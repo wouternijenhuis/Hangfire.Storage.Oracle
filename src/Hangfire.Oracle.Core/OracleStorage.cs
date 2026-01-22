@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Threading;
+using System.Threading.Tasks;
+using Dapper;
 using Hangfire.Logging;
 using Hangfire.Oracle.Core.BackgroundProcesses;
 using Hangfire.Oracle.Core.Queue;
@@ -15,6 +18,22 @@ namespace Hangfire.Oracle.Core;
 /// Oracle storage implementation for Hangfire.
 /// Provides job storage, queue management, and monitoring capabilities using Oracle database.
 /// </summary>
+/// <remarks>
+/// <para>
+/// This implementation is optimized for Oracle Database 19c and higher.
+/// Key features include:
+/// </para>
+/// <list type="bullet">
+///   <item><description>Non-blocking job queue with <c>FOR UPDATE SKIP LOCKED</c></description></item>
+///   <item><description>Automatic retry with exponential backoff for transient failures</description></item>
+///   <item><description>Connection pooling optimization with statement caching</description></item>
+///   <item><description>Background processes for counter aggregation and cleanup</description></item>
+/// </list>
+/// <para>
+/// For optimal performance, configure your connection string with appropriate pooling settings:
+/// <c>Min Pool Size=5;Max Pool Size=100;Connection Lifetime=120;</c>
+/// </para>
+/// </remarks>
 public class OracleStorage : JobStorage, IDisposable
 {
     private static readonly ILog Logger = LogProvider.GetLogger(typeof(OracleStorage));
@@ -22,6 +41,7 @@ public class OracleStorage : JobStorage, IDisposable
     private readonly string _connectionString;
     private readonly OracleStorageOptions _options;
     private readonly Lazy<JobQueueProviderCollection> _queueProviders;
+    private readonly SemaphoreSlim _connectionSemaphore;
     private string? _displayName;
     private bool _disposed;
 
@@ -29,6 +49,7 @@ public class OracleStorage : JobStorage, IDisposable
     /// Initializes a new instance with the specified connection string using default options.
     /// </summary>
     /// <param name="connectionString">Oracle database connection string.</param>
+    /// <exception cref="ArgumentNullException">When connection string is null or empty.</exception>
     public OracleStorage(string connectionString)
         : this(connectionString, new OracleStorageOptions())
     {
@@ -39,13 +60,17 @@ public class OracleStorage : JobStorage, IDisposable
     /// </summary>
     /// <param name="connectionString">Oracle database connection string.</param>
     /// <param name="options">Storage configuration options.</param>
+    /// <exception cref="ArgumentNullException">When connection string or options is null.</exception>
     public OracleStorage(string connectionString, OracleStorageOptions options)
     {
         if (string.IsNullOrWhiteSpace(connectionString))
             throw new ArgumentNullException(nameof(connectionString));
 
-        _connectionString = connectionString;
+        _connectionString = EnhanceConnectionString(connectionString, options);
         _options = options ?? throw new ArgumentNullException(nameof(options));
+
+        // Limit concurrent connection creation during bursts
+        _connectionSemaphore = new SemaphoreSlim(50, 50);
 
         _queueProviders = new Lazy<JobQueueProviderCollection>(
             () => new JobQueueProviderCollection(new OracleJobQueueProvider(this, _options)));
@@ -54,6 +79,11 @@ public class OracleStorage : JobStorage, IDisposable
         {
             InitializeSchema();
         }
+
+        Logger.InfoFormat(
+            "Hangfire Oracle storage initialized. Target: Oracle {0}+, Schema: {1}",
+            (int)_options.MinimumDatabaseVersion,
+            _options.SchemaName ?? "(default)");
     }
 
     /// <summary>
@@ -94,8 +124,15 @@ public class OracleStorage : JobStorage, IDisposable
     public override IEnumerable<IServerComponent> GetComponents()
 #pragma warning restore CS0618
     {
-        yield return new CounterAggregationProcess(this, _options.CounterAggregationInterval);
-        yield return new ExpiredRecordsCleanupProcess(this, _options.JobExpirationCheckInterval);
+        yield return new CounterAggregationProcess(
+            this,
+            _options.CounterAggregationInterval,
+            _options.CleanupBatchSize);
+
+        yield return new ExpiredRecordsCleanupProcess(
+            this,
+            _options.JobExpirationCheckInterval,
+            _options.CleanupBatchSize);
     }
 
     /// <summary>
@@ -104,12 +141,16 @@ public class OracleStorage : JobStorage, IDisposable
     public override void WriteOptionsToLog(ILog logger)
     {
         logger.Info("Using Oracle storage for Hangfire with the following options:");
+        logger.InfoFormat("    Minimum Oracle Version: {0}", _options.MinimumDatabaseVersion);
         logger.InfoFormat("    Schema: {0}", _options.SchemaName ?? "(default)");
         logger.InfoFormat("    Table prefix: {0}", _options.TablePrefix);
         logger.InfoFormat("    Queue poll interval: {0}", _options.QueuePollInterval);
         logger.InfoFormat("    Invisibility timeout: {0}", _options.InvisibilityTimeout);
         logger.InfoFormat("    Job expiration check: {0}", _options.JobExpirationCheckInterval);
         logger.InfoFormat("    Counter aggregation: {0}", _options.CounterAggregationInterval);
+        logger.InfoFormat("    Use SKIP LOCKED: {0}", _options.UseSkipLocked);
+        logger.InfoFormat("    Command timeout: {0}s", _options.CommandTimeout);
+        logger.InfoFormat("    Max retry attempts: {0}", _options.MaxRetryAttempts);
     }
 
     /// <summary>
@@ -127,20 +168,69 @@ public class OracleStorage : JobStorage, IDisposable
     /// <summary>
     /// Creates and opens a new Oracle database connection.
     /// </summary>
+    /// <remarks>
+    /// The connection is configured with statement caching and the appropriate schema
+    /// based on the storage options. Connection pooling is managed by ODP.NET.
+    /// </remarks>
     internal OracleConnection CreateAndOpenConnection()
     {
-        var connection = new OracleConnection(_connectionString);
-        connection.Open();
-
-        // Set schema if configured
-        if (!string.IsNullOrWhiteSpace(_options.SchemaName))
+        // Brief wait to prevent connection storms
+        if (!_connectionSemaphore.Wait(TimeSpan.FromSeconds(30)))
         {
-            using var command = connection.CreateCommand();
-            command.CommandText = $"ALTER SESSION SET CURRENT_SCHEMA = {_options.SchemaName}";
-            command.ExecuteNonQuery();
+            throw new TimeoutException("Timeout waiting for connection slot.");
         }
 
-        return connection;
+        try
+        {
+            var connection = new OracleConnection(_connectionString);
+            connection.Open();
+
+            // Set schema if configured
+            if (!string.IsNullOrWhiteSpace(_options.SchemaName))
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = $"ALTER SESSION SET CURRENT_SCHEMA = {_options.SchemaName}";
+                command.CommandTimeout = _options.CommandTimeout;
+                command.ExecuteNonQuery();
+            }
+
+            return connection;
+        }
+        finally
+        {
+            _connectionSemaphore.Release();
+        }
+    }
+
+    /// <summary>
+    /// Creates and opens a new Oracle database connection asynchronously.
+    /// </summary>
+    internal async Task<OracleConnection> CreateAndOpenConnectionAsync(CancellationToken cancellationToken = default)
+    {
+        if (!await _connectionSemaphore.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false))
+        {
+            throw new TimeoutException("Timeout waiting for connection slot.");
+        }
+
+        try
+        {
+            var connection = new OracleConnection(_connectionString);
+
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!string.IsNullOrWhiteSpace(_options.SchemaName))
+            {
+                await connection.ExecuteAsync(
+                    $"ALTER SESSION SET CURRENT_SCHEMA = {_options.SchemaName}",
+                    commandTimeout: _options.CommandTimeout).ConfigureAwait(false);
+            }
+
+            return connection;
+        }
+        finally
+        {
+            _connectionSemaphore.Release();
+        }
     }
 
     /// <summary>
@@ -207,6 +297,42 @@ public class OracleStorage : JobStorage, IDisposable
     }
 
     /// <summary>
+    /// Executes an async operation within a database connection context.
+    /// </summary>
+    internal async Task<T> ExecuteWithConnectionAsync<T>(
+        Func<OracleConnection, Task<T>> operation,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await CreateAndOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return await operation(connection).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Executes an async operation within a database transaction.
+    /// </summary>
+    internal async Task<T> ExecuteInTransactionAsync<T>(
+        Func<OracleConnection, IDbTransaction, Task<T>> operation,
+        IsolationLevel? isolationLevel = null,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await CreateAndOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction(
+            isolationLevel ?? _options.TransactionIsolationLevel);
+
+        try
+        {
+            var result = await operation(connection, transaction).ConfigureAwait(false);
+            transaction.Commit();
+            return result;
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Releases resources used by the storage.
     /// </summary>
     public void Dispose()
@@ -223,7 +349,10 @@ public class OracleStorage : JobStorage, IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        // Clean up any resources if needed
+        if (disposing)
+        {
+            _connectionSemaphore.Dispose();
+        }
     }
 
     private void InitializeSchema()
@@ -247,6 +376,58 @@ public class OracleStorage : JobStorage, IDisposable
         catch
         {
             return "Hangfire.Oracle.Core";
+        }
+    }
+
+    /// <summary>
+    /// Enhances the connection string with ODP.NET best practice settings.
+    /// </summary>
+    private static string EnhanceConnectionString(string connectionString, OracleStorageOptions options)
+    {
+        try
+        {
+            var builder = new OracleConnectionStringBuilder(connectionString);
+
+            // Only set defaults if not already specified
+            // Connection pooling optimization for Hangfire's usage pattern
+            if (!builder.TryGetValue("Min Pool Size", out _))
+            {
+                builder.MinPoolSize = 5;
+            }
+
+            if (!builder.TryGetValue("Max Pool Size", out _))
+            {
+                builder.MaxPoolSize = 100;
+            }
+
+            if (!builder.TryGetValue("Connection Lifetime", out _))
+            {
+                builder.ConnectionLifeTime = 120;
+            }
+
+            if (!builder.TryGetValue("Connection Timeout", out _))
+            {
+                builder.ConnectionTimeout = options.CommandTimeout;
+            }
+
+            // Enable self-tuning for Oracle 19c+
+            if (!builder.TryGetValue("Self Tuning", out _))
+            {
+                builder["Self Tuning"] = true;
+            }
+
+            // Set statement cache size for better prepared statement reuse
+            if (options.EnableStatementCaching && !builder.TryGetValue("Statement Cache Size", out _))
+            {
+                builder["Statement Cache Size"] = options.StatementCacheSize;
+            }
+
+            return builder.ConnectionString;
+        }
+        catch (Exception ex)
+        {
+            Logger.WarnFormat("Could not enhance connection string: {0}", ex.Message);
+            return connectionString;
         }
     }
 }
