@@ -82,38 +82,57 @@ public class OracleMonitoringApi : IMonitoringApi
     public JobList<ProcessingJobDto> ProcessingJobs(int from, int count)
     {
         return GetJobs<ProcessingJobDto>(from, count, "Processing", 
-            (job, state) => new ProcessingJobDto
+            (job, state) =>
             {
-                Job = job,
-                ServerId = state.Data.ContainsKey("ServerId") ? state.Data["ServerId"] : null,
-                StartedAt = JobHelper.DeserializeDateTime(state.Data["StartedAt"])
+                state.Data.TryGetValue("ServerId", out var serverId);
+
+                return new ProcessingJobDto
+                {
+                    Job = job,
+                    ServerId = serverId,
+                    StartedAt = JobHelper.DeserializeDateTime(state.Data["StartedAt"])
+                };
             });
     }
 
     public JobList<ScheduledJobDto> ScheduledJobs(int from, int count)
     {
         return GetJobs<ScheduledJobDto>(from, count, "Scheduled",
-            (job, state) => new ScheduledJobDto
+            (job, state) =>
             {
-                Job = job,
-                EnqueueAt = JobHelper.DeserializeDateTime(state.Data["EnqueueAt"]),
-                ScheduledAt = JobHelper.DeserializeDateTime(state.Data.ContainsKey("ScheduledAt") 
-                    ? state.Data["ScheduledAt"] 
-                    : state.Data["EnqueueAt"])
+                state.Data.TryGetValue("ScheduledAt", out var scheduledAtString);
+                var enqueueAtString = state.Data["EnqueueAt"];
+
+                return new ScheduledJobDto
+                {
+                    Job = job,
+                    EnqueueAt = JobHelper.DeserializeDateTime(enqueueAtString),
+                    ScheduledAt = JobHelper.DeserializeDateTime(scheduledAtString ?? enqueueAtString)
+                };
             });
     }
 
     public JobList<SucceededJobDto> SucceededJobs(int from, int count)
     {
         return GetJobs<SucceededJobDto>(from, count, "Succeeded",
-            (job, state) => new SucceededJobDto
+            (job, state) =>
             {
-                Job = job,
-                Result = state.Data.ContainsKey("Result") ? state.Data["Result"] : null,
-                TotalDuration = state.Data.ContainsKey("PerformanceDuration") && state.Data.ContainsKey("Latency")
-                    ? (long?)long.Parse(state.Data["PerformanceDuration"]) + long.Parse(state.Data["Latency"])
-                    : null,
-                SucceededAt = JobHelper.DeserializeDateTime(state.Data["SucceededAt"])
+                state.Data.TryGetValue("Result", out var result);
+
+                long? totalDuration = null;
+                if (state.Data.TryGetValue("PerformanceDuration", out var performanceDurationString) &&
+                    state.Data.TryGetValue("Latency", out var latencyString))
+                {
+                    totalDuration = long.Parse(performanceDurationString) + long.Parse(latencyString);
+                }
+
+                return new SucceededJobDto
+                {
+                    Job = job,
+                    Result = result,
+                    TotalDuration = totalDuration,
+                    SucceededAt = JobHelper.DeserializeDateTime(state.Data["SucceededAt"])
+                };
             });
     }
 
