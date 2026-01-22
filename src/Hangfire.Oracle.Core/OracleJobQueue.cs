@@ -29,15 +29,12 @@ public class OracleJobQueue
         {
             var fetchedAt = DateTime.UtcNow;
             
-            // Try to fetch a job from the queue
+            // Try to fetch a job from the queue using FOR UPDATE SKIP LOCKED
             var jobQueue = connection.Query(
-                $@"SELECT ID, JOB_ID FROM (
-                     SELECT ID, JOB_ID
-                     FROM {_storage.GetTableName("JOB_QUEUE")}
-                     WHERE QUEUE = :queue AND FETCHED_AT IS NULL
-                     ORDER BY ID
-                   )
-                   WHERE ROWNUM = 1
+                $@"SELECT ID, JOB_ID
+                   FROM {_storage.GetTableName("JOB_QUEUE")}
+                   WHERE QUEUE = :queue AND FETCHED_AT IS NULL AND ROWNUM = 1
+                   ORDER BY ID
                    FOR UPDATE SKIP LOCKED",
                 new { queue = _queue },
                 transaction: transaction)

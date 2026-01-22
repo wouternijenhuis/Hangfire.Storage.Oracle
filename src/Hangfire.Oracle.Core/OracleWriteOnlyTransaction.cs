@@ -65,10 +65,9 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
     {
         QueueCommand((connection, transaction) =>
         {
-            var stateId = connection.ExecuteScalar<long>(
+            connection.Execute(
                 $@"INSERT INTO {_storage.GetTableName("JOB_STATE")} (ID, JOB_ID, NAME, REASON, CREATED_AT, DATA)
-                   VALUES ({_storage.GetTableName("JOB_STATE_SEQ")}.NEXTVAL, :jobId, :name, :reason, :createdAt, :data)
-                   RETURNING ID INTO :id",
+                   VALUES ({_storage.GetTableName("JOB_STATE_SEQ")}.NEXTVAL, :jobId, :name, :reason, :createdAt, :data)",
                 new
                 {
                     jobId = long.Parse(jobId),
@@ -77,6 +76,10 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
                     createdAt = DateTime.UtcNow,
                     data = JobHelper.ToJson(state.SerializeData())
                 },
+                transaction: transaction);
+
+            var stateId = connection.ExecuteScalar<long>(
+                $@"SELECT {_storage.GetTableName("JOB_STATE_SEQ")}.CURRVAL FROM DUAL",
                 transaction: transaction);
 
             connection.Execute(

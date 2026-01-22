@@ -69,10 +69,10 @@ public class OracleStorageConnection : JobStorageConnection
         using var connection = _storage.CreateAndOpenConnection();
         using var transaction = connection.BeginTransaction();
 
-        var jobId = connection.ExecuteScalar<long>(
+        // Insert the job and get the ID using a SELECT after insert
+        connection.Execute(
             $@"INSERT INTO {_storage.GetTableName("JOB")} (ID, INVOCATION_DATA, ARGUMENTS, CREATED_AT, EXPIRE_AT)
-               VALUES ({_storage.GetTableName("JOB_SEQ")}.NEXTVAL, :invocationData, :arguments, :createdAt, :expireAt)
-               RETURNING ID INTO :id",
+               VALUES ({_storage.GetTableName("JOB_SEQ")}.NEXTVAL, :invocationData, :arguments, :createdAt, :expireAt)",
             new
             {
                 invocationData = JobHelper.ToJson(invocationData),
@@ -80,6 +80,10 @@ public class OracleStorageConnection : JobStorageConnection
                 createdAt = createdAt,
                 expireAt = createdAt.Add(expireIn)
             },
+            transaction: transaction);
+
+        var jobId = connection.ExecuteScalar<long>(
+            $@"SELECT {_storage.GetTableName("JOB_SEQ")}.CURRVAL FROM DUAL",
             transaction: transaction);
 
         if (parameters != null)
@@ -105,7 +109,7 @@ public class OracleStorageConnection : JobStorageConnection
         using var connection = _storage.CreateAndOpenConnection();
 
         var jobData = connection.Query(
-            $@"SELECT INVOCATION_DATA, STATE_NAME, CREATED_AT, EXPIRE_AT
+            $@"SELECT INVOCATION_DATA, ARGUMENTS, STATE_NAME, CREATED_AT, EXPIRE_AT
                FROM {_storage.GetTableName("JOB")}
                WHERE ID = :id",
             new { id = long.Parse(jobId) })
