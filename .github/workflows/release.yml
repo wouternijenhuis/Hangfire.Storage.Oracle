@@ -73,12 +73,12 @@ jobs:
           
           Install via NuGet Package Manager:
           \`\`\`
-          Install-Package Hangfire.Oracle.Core -Version ${{ steps.version.outputs.version }}
+          Install-Package Hangfire.Storage.Oracle -Version ${{ steps.version.outputs.version }}
           \`\`\`
           
           Or via .NET CLI:
           \`\`\`
-          dotnet add package Hangfire.Oracle.Core --version ${{ steps.version.outputs.version }}
+          dotnet add package Hangfire.Storage.Oracle --version ${{ steps.version.outputs.version }}
           \`\`\`
           
           ## Framework Support
