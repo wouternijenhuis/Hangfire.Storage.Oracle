@@ -100,7 +100,7 @@ All tables use sequences for auto-incrementing IDs and include appropriate index
 
 ### Technologies Used
 
-- **.NET 8.0** - Target framework
+- **.NET 8.0 / .NET 10.0** - Target frameworks (multi-targeting)
 - **Hangfire.Core 1.8.22** - Base Hangfire library
 - **Oracle.ManagedDataAccess.Core 23.26.100** - Oracle database driver
 - **Dapper 2.1.66** - Micro-ORM for data access

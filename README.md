@@ -140,16 +140,16 @@ If you prefer to create the schema manually, you can run the SQL scripts located
 
 ## Requirements
 
-- .NET 8.0 or later
+- .NET 8.0 or .NET 10.0
 - Oracle Database 12c or later
 - Hangfire.Core 1.8.x
 
 ## Dependencies
 
-- Hangfire.Core (≥ 1.8.22)
-- Oracle.ManagedDataAccess.Core (≥ 23.26.100)
-- Dapper (≥ 2.1.66)
-- Dapper.Oracle (≥ 2.0.2)
+- Hangfire.Core 1.8.22
+- Oracle.ManagedDataAccess.Core 23.26.100
+- Dapper 2.1.66
+- Dapper.Oracle 2.0.2
 
 ## License
 
