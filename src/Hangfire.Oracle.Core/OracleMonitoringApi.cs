@@ -101,7 +101,7 @@ public class OracleMonitoringApi : IMonitoringApi
             (job, state) =>
             {
                 state.Data.TryGetValue("ScheduledAt", out var scheduledAtString);
-                var enqueueAtString = state.Data["EnqueueAt"];
+                state.Data.TryGetValue("EnqueueAt", out var enqueueAtString);
 
                 return new ScheduledJobDto
                 {

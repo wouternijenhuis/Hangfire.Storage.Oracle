@@ -40,6 +40,12 @@ public class OracleStorageConnection : JobStorageConnection
         var providers = queues.Select(queue => new OracleJobQueue(_storage, queue)).ToArray();
 
         var fetchedJob = default(IFetchedJob);
+        
+        // This is an intentional infinite loop that continuously polls for jobs
+        // It only exits when:
+        // 1. A job is successfully fetched, or
+        // 2. The cancellation token is triggered
+        // The QueuePollInterval provides throttling between attempts
         while (fetchedJob == null)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -415,17 +421,29 @@ public class OracleStorageConnection : JobStorageConnection
         if (keyValuePairs == null) throw new ArgumentNullException(nameof(keyValuePairs));
 
         using var connection = _storage.CreateAndOpenConnection();
+        using var transaction = connection.BeginTransaction();
 
-        foreach (var pair in keyValuePairs)
+        try
         {
-            connection.Execute(
-                $@"MERGE INTO {_storage.GetTableName("HASH")} h
-                   USING (SELECT :key AS KEY_NAME, :field AS FIELD FROM DUAL) src
-                   ON (h.KEY_NAME = src.KEY_NAME AND h.FIELD = src.FIELD)
-                   WHEN MATCHED THEN UPDATE SET h.VALUE = :value
-                   WHEN NOT MATCHED THEN INSERT (ID, KEY_NAME, FIELD, VALUE, EXPIRE_AT)
-                     VALUES ({_storage.GetTableName("HASH_SEQ")}.NEXTVAL, :key, :field, :value, NULL)",
-                new { key, field = pair.Key, value = pair.Value });
+            foreach (var pair in keyValuePairs)
+            {
+                connection.Execute(
+                    $@"MERGE INTO {_storage.GetTableName("HASH")} h
+                       USING (SELECT :key AS KEY_NAME, :field AS FIELD FROM DUAL) src
+                       ON (h.KEY_NAME = src.KEY_NAME AND h.FIELD = src.FIELD)
+                       WHEN MATCHED THEN UPDATE SET h.VALUE = :value
+                       WHEN NOT MATCHED THEN INSERT (ID, KEY_NAME, FIELD, VALUE, EXPIRE_AT)
+                         VALUES ({_storage.GetTableName("HASH_SEQ")}.NEXTVAL, :key, :field, :value, NULL)",
+                    new { key, field = pair.Key, value = pair.Value },
+                    transaction: transaction);
+            }
+
+            transaction.Commit();
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
         }
     }
 
