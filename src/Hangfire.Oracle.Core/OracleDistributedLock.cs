@@ -1,5 +1,3 @@
-using System;
-using System.Threading;
 using Dapper;
 using Hangfire.Logging;
 using Hangfire.Oracle.Core.Exceptions;
@@ -24,7 +22,7 @@ namespace Hangfire.Oracle.Core;
 /// </remarks>
 public sealed class OracleDistributedLock : IDisposable
 {
-    private static readonly ILog Logger = LogProvider.GetLogger(typeof(OracleDistributedLock));
+    private static readonly ILog _logger = LogProvider.GetLogger(typeof(OracleDistributedLock));
 
     private readonly OracleStorage _storage;
     private readonly string _resource;
@@ -56,7 +54,9 @@ public sealed class OracleDistributedLock : IDisposable
         _resource = resource ?? throw new ArgumentNullException(nameof(resource));
 
         if (string.IsNullOrWhiteSpace(resource))
+        {
             throw new ArgumentException("Resource name cannot be empty.", nameof(resource));
+        }
 
         _connection = _storage.CreateAndOpenConnection();
 
@@ -64,12 +64,12 @@ public sealed class OracleDistributedLock : IDisposable
         {
             AcquireLock(timeout);
             _acquiredAt = DateTime.UtcNow;
-            Logger.TraceFormat("Distributed lock acquired for resource '{0}'.", _resource);
+            _logger.TraceFormat("Distributed lock acquired for resource '{0}'.", _resource);
         }
         catch (Exception ex)
         {
             _connection?.Dispose();
-            
+
             if (ex is TimeoutException)
             {
                 throw new DistributedLockAcquisitionException(
@@ -77,6 +77,7 @@ public sealed class OracleDistributedLock : IDisposable
                     timeout,
                     ex);
             }
+
             throw;
         }
     }
@@ -86,9 +87,9 @@ public sealed class OracleDistributedLock : IDisposable
         var started = DateTime.UtcNow;
         var lockAcquired = false;
         var attempt = 0;
-        const int maxAttempts = 1000; // Safety limit to prevent infinite loop
+        const int MaxAttempts = 1000; // Safety limit to prevent infinite loop
 
-        while (!lockAcquired && DateTime.UtcNow - started < timeout && attempt < maxAttempts)
+        while (!lockAcquired && DateTime.UtcNow - started < timeout && attempt < MaxAttempts)
         {
             attempt++;
 
@@ -143,7 +144,7 @@ public sealed class OracleDistributedLock : IDisposable
                 }
                 else if (OracleErrorCodes.IsTransientError(ex.Number))
                 {
-                    Logger.WarnFormat("Transient error while acquiring lock: ORA-{0}", ex.Number);
+                    _logger.WarnFormat("Transient error while acquiring lock: ORA-{0}", ex.Number);
                     Thread.Sleep(100);
                 }
                 else
@@ -168,7 +169,9 @@ public sealed class OracleDistributedLock : IDisposable
     public bool Extend()
     {
         if (_disposed)
+        {
             throw new ObjectDisposedException(nameof(OracleDistributedLock));
+        }
 
         try
         {
@@ -182,7 +185,7 @@ public sealed class OracleDistributedLock : IDisposable
         }
         catch (OracleException ex)
         {
-            Logger.WarnException($"Failed to extend lock for resource '{_resource}'.", ex);
+            _logger.WarnException($"Failed to extend lock for resource '{_resource}'.", ex);
             return false;
         }
     }
@@ -193,7 +196,9 @@ public sealed class OracleDistributedLock : IDisposable
     public void Dispose()
     {
         if (_disposed)
+        {
             return;
+        }
 
         _disposed = true;
 
@@ -204,12 +209,12 @@ public sealed class OracleDistributedLock : IDisposable
                    WHERE RESOURCE_NAME = :resource",
                 new { resource = _resource });
 
-            Logger.TraceFormat("Distributed lock released for resource '{0}'.", _resource);
+            _logger.TraceFormat("Distributed lock released for resource '{0}'.", _resource);
         }
         catch (OracleException ex)
         {
             // Log but don't throw - lock will eventually expire
-            Logger.WarnException($"Error releasing lock for resource '{_resource}'.", ex);
+            _logger.WarnException($"Error releasing lock for resource '{_resource}'.", ex);
         }
         finally
         {

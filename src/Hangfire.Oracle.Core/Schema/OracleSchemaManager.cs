@@ -1,7 +1,3 @@
-using System;
-using System.Data;
-using System.IO;
-using System.Reflection;
 using Oracle.ManagedDataAccess.Client;
 
 namespace Hangfire.Oracle.Core.Schema;
@@ -25,9 +21,14 @@ public static class OracleSchemaManager
     public static void EnsureSchemaCreated(OracleConnection connection, string tablePrefix = "HF_", string? schemaName = null)
     {
         if (connection == null)
+        {
             throw new ArgumentNullException(nameof(connection));
+        }
+
         if (string.IsNullOrEmpty(tablePrefix))
+        {
             throw new ArgumentException("Table prefix cannot be empty.", nameof(tablePrefix));
+        }
 
         if (TablesExist(connection, tablePrefix, schemaName))
         {
@@ -48,7 +49,9 @@ public static class OracleSchemaManager
     public static bool TablesExist(OracleConnection connection, string tablePrefix = "HF_", string? schemaName = null)
     {
         if (connection == null)
+        {
             throw new ArgumentNullException(nameof(connection));
+        }
 
         var jobTableName = $"{tablePrefix}JOB";
         string checkSql;
@@ -69,11 +72,12 @@ public static class OracleSchemaManager
         }
 
         using var command = new OracleCommand(checkSql, connection);
-        
+
         if (!string.IsNullOrEmpty(schemaName))
         {
             command.Parameters.Add(new OracleParameter("schemaName", schemaName.ToUpperInvariant()));
         }
+
         command.Parameters.Add(new OracleParameter("tableName", jobTableName.ToUpperInvariant()));
 
         var count = Convert.ToInt32(command.ExecuteScalar());
@@ -129,11 +133,15 @@ public static class OracleSchemaManager
         {
             var trimmed = statement.Trim();
             if (string.IsNullOrWhiteSpace(trimmed))
+            {
                 continue;
+            }
 
             // Skip comments
             if (trimmed.StartsWith("--") || trimmed.StartsWith("/*"))
+            {
                 continue;
+            }
 
             try
             {
@@ -203,7 +211,9 @@ public static class OracleSchemaManager
     public static void DropSchema(OracleConnection connection, string tablePrefix = "HF_")
     {
         if (connection == null)
+        {
             throw new ArgumentNullException(nameof(connection));
+        }
 
         // Drop in reverse dependency order
         var tablesToDrop = new[]

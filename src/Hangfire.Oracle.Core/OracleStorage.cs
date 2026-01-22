@@ -1,8 +1,4 @@
-using System;
-using System.Collections.Generic;
 using System.Data;
-using System.Threading;
-using System.Threading.Tasks;
 using Dapper;
 using Hangfire.Logging;
 using Hangfire.Oracle.Core.BackgroundProcesses;
@@ -36,7 +32,7 @@ namespace Hangfire.Oracle.Core;
 /// </remarks>
 public class OracleStorage : JobStorage, IDisposable
 {
-    private static readonly ILog Logger = LogProvider.GetLogger(typeof(OracleStorage));
+    private static readonly ILog _logger = LogProvider.GetLogger(typeof(OracleStorage));
 
     private readonly string _connectionString;
     private readonly OracleStorageOptions _options;
@@ -64,7 +60,9 @@ public class OracleStorage : JobStorage, IDisposable
     public OracleStorage(string connectionString, OracleStorageOptions options)
     {
         if (string.IsNullOrWhiteSpace(connectionString))
+        {
             throw new ArgumentNullException(nameof(connectionString));
+        }
 
         _connectionString = EnhanceConnectionString(connectionString, options);
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -80,7 +78,7 @@ public class OracleStorage : JobStorage, IDisposable
             InitializeSchema();
         }
 
-        Logger.InfoFormat(
+        _logger.InfoFormat(
             "Hangfire Oracle storage initialized. Target: Oracle {0}+, Schema: {1}",
             (int)_options.MinimumDatabaseVersion,
             _options.SchemaName ?? "(default)");
@@ -121,6 +119,7 @@ public class OracleStorage : JobStorage, IDisposable
     /// Gets the background server components for maintenance operations.
     /// </summary>
 #pragma warning disable CS0618 // IServerComponent is obsolete but required for Hangfire
+    [Obsolete]
     public override IEnumerable<IServerComponent> GetComponents()
 #pragma warning restore CS0618
     {
@@ -159,7 +158,9 @@ public class OracleStorage : JobStorage, IDisposable
     public override string ToString()
     {
         if (_displayName != null)
+        {
             return _displayName;
+        }
 
         _displayName = BuildDisplayName();
         return _displayName;
@@ -303,8 +304,11 @@ public class OracleStorage : JobStorage, IDisposable
         Func<OracleConnection, Task<T>> operation,
         CancellationToken cancellationToken = default)
     {
-        await using var connection = await CreateAndOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        return await operation(connection).ConfigureAwait(false);
+        var connection = await CreateAndOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using (connection.ConfigureAwait(false))
+        {
+            return await operation(connection).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -315,20 +319,23 @@ public class OracleStorage : JobStorage, IDisposable
         IsolationLevel? isolationLevel = null,
         CancellationToken cancellationToken = default)
     {
-        await using var connection = await CreateAndOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = connection.BeginTransaction(
-            isolationLevel ?? _options.TransactionIsolationLevel);
+        var connection = await CreateAndOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using (connection.ConfigureAwait(false))
+        {
+            using var transaction = connection.BeginTransaction(
+                isolationLevel ?? _options.TransactionIsolationLevel);
 
-        try
-        {
-            var result = await operation(connection, transaction).ConfigureAwait(false);
-            transaction.Commit();
-            return result;
-        }
-        catch
-        {
-            transaction.Rollback();
-            throw;
+            try
+            {
+                var result = await operation(connection, transaction).ConfigureAwait(false);
+                transaction.Commit();
+                return result;
+            }
+            catch
+            {
+                transaction.Rollback();
+                throw;
+            }
         }
     }
 
@@ -346,7 +353,11 @@ public class OracleStorage : JobStorage, IDisposable
     /// </summary>
     protected virtual void Dispose(bool disposing)
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         _disposed = true;
 
         if (disposing)
@@ -426,7 +437,7 @@ public class OracleStorage : JobStorage, IDisposable
         }
         catch (Exception ex)
         {
-            Logger.WarnFormat("Could not enhance connection string: {0}", ex.Message);
+            _logger.WarnFormat("Could not enhance connection string: {0}", ex.Message);
             return connectionString;
         }
     }

@@ -1,9 +1,5 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using Dapper;
 using Hangfire.Common;
-using Hangfire.States;
 using Hangfire.Storage;
 using Hangfire.Storage.Monitoring;
 
@@ -16,11 +12,13 @@ public class OracleMonitoringApi : IMonitoringApi
 {
     private readonly OracleStorage _storage;
 
+    /// <inheritdoc/>
     public OracleMonitoringApi(OracleStorage storage)
     {
         _storage = storage ?? throw new ArgumentNullException(nameof(storage));
     }
 
+    /// <inheritdoc/>
     public StatisticsDto GetStatistics()
     {
         using var connection = _storage.CreateAndOpenConnection();
@@ -35,9 +33,13 @@ public class OracleMonitoringApi : IMonitoringApi
         foreach (var counter in counters)
         {
             if (counter.Key == "stats:succeeded")
+            {
                 stats.Succeeded = counter.Value;
+            }
             else if (counter.Key == "stats:deleted")
+            {
                 stats.Deleted = counter.Value;
+            }
         }
 
         stats.Enqueued = connection.ExecuteScalar<long>(
@@ -69,19 +71,22 @@ public class OracleMonitoringApi : IMonitoringApi
         return stats;
     }
 
+    /// <inheritdoc/>
     public JobList<EnqueuedJobDto> EnqueuedJobs(string queue, int from, int perPage)
     {
         return GetJobsOnQueue(queue, from, perPage, "Enqueued");
     }
 
+    /// <inheritdoc/>
     public JobList<FetchedJobDto> FetchedJobs(string queue, int from, int perPage)
     {
         return GetJobsOnQueue<FetchedJobDto>(queue, from, perPage, "Fetched");
     }
 
+    /// <inheritdoc/>
     public JobList<ProcessingJobDto> ProcessingJobs(int from, int count)
     {
-        return GetJobs<ProcessingJobDto>(from, count, "Processing", 
+        return GetJobs<ProcessingJobDto>(from, count, "Processing",
             (job, state) =>
             {
                 state.Data.TryGetValue("ServerId", out var serverId);
@@ -95,6 +100,7 @@ public class OracleMonitoringApi : IMonitoringApi
             });
     }
 
+    /// <inheritdoc/>
     public JobList<ScheduledJobDto> ScheduledJobs(int from, int count)
     {
         return GetJobs<ScheduledJobDto>(from, count, "Scheduled",
@@ -112,6 +118,7 @@ public class OracleMonitoringApi : IMonitoringApi
             });
     }
 
+    /// <inheritdoc/>
     public JobList<SucceededJobDto> SucceededJobs(int from, int count)
     {
         return GetJobs<SucceededJobDto>(from, count, "Succeeded",
@@ -136,6 +143,7 @@ public class OracleMonitoringApi : IMonitoringApi
             });
     }
 
+    /// <inheritdoc/>
     public JobList<FailedJobDto> FailedJobs(int from, int count)
     {
         return GetJobs<FailedJobDto>(from, count, "Failed",
@@ -150,6 +158,7 @@ public class OracleMonitoringApi : IMonitoringApi
             });
     }
 
+    /// <inheritdoc/>
     public JobList<DeletedJobDto> DeletedJobs(int from, int count)
     {
         return GetJobs<DeletedJobDto>(from, count, "Deleted",
@@ -165,6 +174,7 @@ public class OracleMonitoringApi : IMonitoringApi
             });
     }
 
+    /// <inheritdoc/>
     public long EnqueuedCount(string queue)
     {
         using var connection = _storage.CreateAndOpenConnection();
@@ -175,6 +185,7 @@ public class OracleMonitoringApi : IMonitoringApi
             new { queue });
     }
 
+    /// <inheritdoc/>
     public long FetchedCount(string queue)
     {
         using var connection = _storage.CreateAndOpenConnection();
@@ -185,51 +196,61 @@ public class OracleMonitoringApi : IMonitoringApi
             new { queue });
     }
 
+    /// <inheritdoc/>
     public long ScheduledCount()
     {
         return GetCountByState("Scheduled");
     }
 
+    /// <inheritdoc/>
     public long ProcessingCount()
     {
         return GetCountByState("Processing");
     }
 
+    /// <inheritdoc/>
     public long SucceededListCount()
     {
         return GetCountByState("Succeeded");
     }
 
+    /// <inheritdoc/>
     public long FailedCount()
     {
         return GetCountByState("Failed");
     }
 
+    /// <inheritdoc/>
     public long DeletedListCount()
     {
         return GetCountByState("Deleted");
     }
 
+    /// <inheritdoc/>
     public IDictionary<DateTime, long> SucceededByDatesCount()
     {
         return GetTimelineStats("succeeded");
     }
 
+    /// <inheritdoc/>
     public IDictionary<DateTime, long> FailedByDatesCount()
     {
         return GetTimelineStats("failed");
     }
 
+    /// <inheritdoc/>
     public IDictionary<DateTime, long> HourlySucceededJobs()
     {
         return GetHourlyTimelineStats("succeeded");
     }
 
+    /// <inheritdoc/>
     public IDictionary<DateTime, long> HourlyFailedJobs()
     {
         return GetHourlyTimelineStats("failed");
     }
 
+    /// <inheritdoc/>
     public IList<ServerDto> Servers()
     {
         using var connection = _storage.CreateAndOpenConnection();
@@ -241,7 +262,7 @@ public class OracleMonitoringApi : IMonitoringApi
         return servers.Select(x =>
         {
             var serverData = JobHelper.FromJson<ServerData>(x.DATA);
-            
+
             return new ServerDto
             {
                 Name = x.ID,
@@ -261,6 +282,7 @@ public class OracleMonitoringApi : IMonitoringApi
         public DateTime StartedAt { get; set; }
     }
 
+    /// <inheritdoc/>
     public IList<QueueWithTopEnqueuedJobsDto> Queues()
     {
         using var connection = _storage.CreateAndOpenConnection();
@@ -278,7 +300,8 @@ public class OracleMonitoringApi : IMonitoringApi
         }).ToList();
     }
 
-    public JobDetailsDto JobDetails(string jobId)
+    /// <inheritdoc/>
+    public JobDetailsDto? JobDetails(string jobId)
     {
         using var connection = _storage.CreateAndOpenConnection();
 
@@ -290,7 +313,9 @@ public class OracleMonitoringApi : IMonitoringApi
             .SingleOrDefault();
 
         if (job == null)
+        {
             return null;
+        }
 
         var history = connection.Query(
             $@"SELECT NAME, REASON, CREATED_AT, DATA
@@ -392,7 +417,7 @@ public class OracleMonitoringApi : IMonitoringApi
         return GetJobsOnQueue<EnqueuedJobDto>(queue, from, perPage, stateName);
     }
 
-    private JobList<T> GetJobsOnQueue<T>(string queue, int from, int perPage, string stateName) 
+    private JobList<T> GetJobsOnQueue<T>(string queue, int from, int perPage, string stateName)
         where T : new()
     {
         using var connection = _storage.CreateAndOpenConnection();
@@ -409,7 +434,7 @@ public class OracleMonitoringApi : IMonitoringApi
             new { queue, from, to = from + perPage })
             .ToList();
 
-        return new JobList<T>(jobs.Select(job => 
+        return new JobList<T>(jobs.Select(job =>
         {
             var invocationData = JobHelper.FromJson<InvocationData>(job.INVOCATION_DATA);
             invocationData.Arguments = job.ARGUMENTS;
@@ -450,7 +475,7 @@ public class OracleMonitoringApi : IMonitoringApi
         }).ToList());
     }
 
-    private JobList<T> GetJobs<T>(int from, int count, string stateName, 
+    private JobList<T> GetJobs<T>(int from, int count, string stateName,
         Func<Job, StateData, T> selector)
     {
         using var connection = _storage.CreateAndOpenConnection();
@@ -492,7 +517,7 @@ public class OracleMonitoringApi : IMonitoringApi
 
             return new KeyValuePair<string, T>(
                 job.ID.ToString(),
-                selector(deserializedJob, stateData)
+                selector(deserializedJob!, stateData)
             );
         }).ToList());
     }

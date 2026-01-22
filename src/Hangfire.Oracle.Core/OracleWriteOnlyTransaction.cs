@@ -1,7 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
 using Dapper;
 using Hangfire.Common;
 using Hangfire.Logging;
@@ -26,7 +22,7 @@ namespace Hangfire.Oracle.Core;
 /// </remarks>
 public class OracleWriteOnlyTransaction : JobStorageTransaction
 {
-    private static readonly ILog Logger = LogProvider.GetLogger(typeof(OracleWriteOnlyTransaction));
+    private static readonly ILog _logger = LogProvider.GetLogger(typeof(OracleWriteOnlyTransaction));
 
     private readonly OracleStorage _storage;
     private readonly Queue<CommandAction> _commandQueue = new();
@@ -58,7 +54,9 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
     public override void Commit()
     {
         if (_commandQueue.Count == 0)
+        {
             return;
+        }
 
         var commandCount = _commandQueue.Count;
 
@@ -74,7 +72,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
 
             transaction.Commit();
 
-            Logger.TraceFormat("Committed transaction with {0} commands.", commandCount);
+            _logger.TraceFormat("Committed transaction with {0} commands.", commandCount);
         }
         catch (OracleException ex)
         {
@@ -82,7 +80,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
 
             if (OracleErrorCodes.IsTransientError(ex.Number))
             {
-                Logger.WarnFormat("Transient error during commit (ORA-{0}), transaction rolled back.", ex.Number);
+                _logger.WarnFormat("Transient error during commit (ORA-{0}), transaction rolled back.", ex.Number);
             }
 
             throw;
@@ -100,39 +98,44 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
     public async Task CommitAsync(CancellationToken cancellationToken = default)
     {
         if (_commandQueue.Count == 0)
+        {
             return;
+        }
 
         var commandCount = _commandQueue.Count;
 
-        await using var connection = await _storage.CreateAndOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = connection.BeginTransaction(_storage.Options.TransactionIsolationLevel);
-
-        try
+        var connection = await _storage.CreateAndOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using (connection.ConfigureAwait(false))
         {
-            foreach (var command in _commandQueue)
+            using var transaction = connection.BeginTransaction(_storage.Options.TransactionIsolationLevel);
+
+            try
             {
-                command.Execute(connection, transaction);
+                foreach (var command in _commandQueue)
+                {
+                    command.Execute(connection, transaction);
+                }
+
+                transaction.Commit();
+
+                _logger.TraceFormat("Committed async transaction with {0} commands.", commandCount);
             }
-
-            transaction.Commit();
-
-            Logger.TraceFormat("Committed async transaction with {0} commands.", commandCount);
-        }
-        catch (OracleException ex)
-        {
-            transaction.Rollback();
-
-            if (OracleErrorCodes.IsTransientError(ex.Number))
+            catch (OracleException ex)
             {
-                Logger.WarnFormat("Transient error during async commit (ORA-{0}), transaction rolled back.", ex.Number);
-            }
+                transaction.Rollback();
 
-            throw;
-        }
-        catch
-        {
-            transaction.Rollback();
-            throw;
+                if (OracleErrorCodes.IsTransientError(ex.Number))
+                {
+                    _logger.WarnFormat("Transient error during async commit (ORA-{0}), transaction rolled back.", ex.Number);
+                }
+
+                throw;
+            }
+            catch
+            {
+                transaction.Rollback();
+                throw;
+            }
         }
     }
 

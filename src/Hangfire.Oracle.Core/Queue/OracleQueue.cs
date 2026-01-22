@@ -1,7 +1,4 @@
-using System;
 using System.Data;
-using System.Linq;
-using System.Threading;
 using Dapper;
 using Hangfire.Logging;
 using Hangfire.Storage;
@@ -26,7 +23,7 @@ namespace Hangfire.Oracle.Core.Queue;
 /// </remarks>
 internal sealed class OracleQueue : IJobQueue
 {
-    private static readonly ILog Logger = LogProvider.GetLogger(typeof(OracleQueue));
+    private static readonly ILog _logger = LogProvider.GetLogger(typeof(OracleQueue));
 
     private readonly OracleStorage _storage;
     private readonly OracleStorageOptions _options;
@@ -41,7 +38,9 @@ internal sealed class OracleQueue : IJobQueue
     public IFetchedJob? Dequeue(string[] queues, CancellationToken cancellationToken)
     {
         if (queues == null || queues.Length == 0)
+        {
             throw new ArgumentException("At least one queue name must be specified.", nameof(queues));
+        }
 
         var pollAttempts = 0;
 
@@ -55,13 +54,13 @@ internal sealed class OracleQueue : IJobQueue
 
                 if (fetchedJob != null)
                 {
-                    Logger.TraceFormat("Dequeued job {0} from queue '{1}'.", fetchedJob.JobId, fetchedJob.Queue);
+                    _logger.TraceFormat("Dequeued job {0} from queue '{1}'.", fetchedJob.JobId, fetchedJob.Queue);
                     return fetchedJob;
                 }
             }
             catch (OracleException ex) when (OracleErrorCodes.IsTransientError(ex.Number))
             {
-                Logger.WarnFormat("Transient error during dequeue (ORA-{0}), retrying...", ex.Number);
+                _logger.WarnFormat("Transient error during dequeue (ORA-{0}), retrying...", ex.Number);
             }
 
             // Increment poll attempts for exponential backoff on empty queues
@@ -152,7 +151,10 @@ internal sealed class OracleQueue : IJobQueue
         }
         catch
         {
-            try { transaction.Rollback(); } catch { /* ignore */ }
+            try
+            { transaction.Rollback(); }
+            catch { /* ignore */ }
+
             throw;
         }
     }
@@ -231,12 +233,18 @@ internal sealed class OracleQueue : IJobQueue
         }
         catch (OracleException ex) when (OracleErrorCodes.IsResourceBusy(ex))
         {
-            try { transaction.Rollback(); } catch { /* ignore */ }
+            try
+            { transaction.Rollback(); }
+            catch { /* ignore */ }
+
             return null;
         }
         catch
         {
-            try { transaction.Rollback(); } catch { /* ignore */ }
+            try
+            { transaction.Rollback(); }
+            catch { /* ignore */ }
+
             throw;
         }
     }
@@ -245,9 +253,14 @@ internal sealed class OracleQueue : IJobQueue
     public void Enqueue(IDbConnection connection, IDbTransaction? transaction, string queue, string jobId)
     {
         if (string.IsNullOrEmpty(queue))
+        {
             throw new ArgumentNullException(nameof(queue));
+        }
+
         if (string.IsNullOrEmpty(jobId))
+        {
             throw new ArgumentNullException(nameof(jobId));
+        }
 
         var queueTableName = _storage.GetTableName("JOB_QUEUE");
 
@@ -262,7 +275,7 @@ internal sealed class OracleQueue : IJobQueue
             transaction,
             commandTimeout: _options.CommandTimeout);
 
-        Logger.TraceFormat("Enqueued job {0} to queue '{1}'.", jobId, queue);
+        _logger.TraceFormat("Enqueued job {0} to queue '{1}'.", jobId, queue);
     }
 
     private DateTime GetCurrentTime() =>

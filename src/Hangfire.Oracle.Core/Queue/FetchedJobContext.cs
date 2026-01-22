@@ -1,4 +1,3 @@
-using System;
 using Hangfire.Storage;
 using Oracle.ManagedDataAccess.Client;
 
@@ -47,7 +46,9 @@ internal sealed class FetchedJobContext : IFetchedJob
     public void RemoveFromQueue()
     {
         if (_disposed)
+        {
             throw new ObjectDisposedException(GetType().Name);
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
         var queueTableName = _storage.GetTableName("JOB_QUEUE");
@@ -71,7 +72,9 @@ internal sealed class FetchedJobContext : IFetchedJob
     public void Requeue()
     {
         if (_disposed)
+        {
             throw new ObjectDisposedException(GetType().Name);
+        }
 
         using var connection = _storage.CreateAndOpenConnection();
         var queueTableName = _storage.GetTableName("JOB_QUEUE");
@@ -96,7 +99,11 @@ internal sealed class FetchedJobContext : IFetchedJob
     /// </summary>
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         _disposed = true;
 
         // If the job wasn't explicitly handled, requeue it

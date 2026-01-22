@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Threading;
 using Dapper;
 using Hangfire.Logging;
 using Hangfire.Server;
@@ -15,7 +12,7 @@ namespace Hangfire.Oracle.Core.BackgroundProcesses;
 internal sealed class ExpiredRecordsCleanupProcess : IServerComponent
 #pragma warning restore CS0618
 {
-    private static readonly ILog Logger = LogProvider.GetLogger(typeof(ExpiredRecordsCleanupProcess));
+    private static readonly ILog _logger = LogProvider.GetLogger(typeof(ExpiredRecordsCleanupProcess));
 
     private readonly OracleStorage _storage;
     private readonly TimeSpan _cleanupInterval;
@@ -65,7 +62,7 @@ internal sealed class ExpiredRecordsCleanupProcess : IServerComponent
     /// </summary>
     public void Execute(CancellationToken cancellationToken)
     {
-        Logger.Debug("Starting expired records cleanup...");
+        _logger.Debug("Starting expired records cleanup...");
 
         var currentTime = DateTime.UtcNow;
         var totalDeleted = 0;
@@ -81,7 +78,9 @@ internal sealed class ExpiredRecordsCleanupProcess : IServerComponent
             foreach (var target in _cleanupTargets)
             {
                 if (cancellationToken.IsCancellationRequested)
+                {
                     break;
+                }
 
                 var deleted = CleanupTable(target, currentTime, cancellationToken);
                 totalDeleted += deleted;
@@ -89,12 +88,12 @@ internal sealed class ExpiredRecordsCleanupProcess : IServerComponent
 
             if (totalDeleted > 0)
             {
-                Logger.InfoFormat("Cleaned up {0} expired records.", totalDeleted);
+                _logger.InfoFormat("Cleaned up {0} expired records.", totalDeleted);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            Logger.WarnException("Failed to acquire cleanup lock or error during cleanup.", ex);
+            _logger.WarnException("Failed to acquire cleanup lock or error during cleanup.", ex);
         }
 
         // Wait for next cleanup cycle
@@ -110,7 +109,9 @@ internal sealed class ExpiredRecordsCleanupProcess : IServerComponent
         do
         {
             if (cancellationToken.IsCancellationRequested)
+            {
                 break;
+            }
 
             batchDeleted = DeleteBatch(target, tableName, expireAt);
             totalDeleted += batchDeleted;
@@ -125,7 +126,7 @@ internal sealed class ExpiredRecordsCleanupProcess : IServerComponent
 
         if (totalDeleted > 0)
         {
-            Logger.DebugFormat("Deleted {0} expired records from {1}.", totalDeleted, target.TableName);
+            _logger.DebugFormat("Deleted {0} expired records from {1}.", totalDeleted, target.TableName);
         }
 
         return totalDeleted;
@@ -164,7 +165,7 @@ internal sealed class ExpiredRecordsCleanupProcess : IServerComponent
         }
         catch (Exception ex)
         {
-            Logger.WarnException($"Error cleaning up table {target.TableName}.", ex);
+            _logger.WarnException($"Error cleaning up table {target.TableName}.", ex);
             return 0;
         }
     }
