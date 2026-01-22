@@ -1,37 +1,32 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    This project inherits common settings from Directory.Build.props
+    Package versions are managed centrally in Directory.Packages.props
+  -->
+
   <PropertyGroup>
-    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
+    <!-- Enable packaging for this project -->
+    <IsPackable>true</IsPackable>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     
-    <!-- Package metadata -->
+    <!-- Package-specific metadata -->
     <PackageId>Hangfire.Oracle.Core</PackageId>
     <Title>Hangfire Oracle Storage Provider</Title>
-    <Description>Hangfire storage provider implementation for Oracle Database using Oracle.ManagedDataAccess.Core and Dapper</Description>
-    <Authors>Wouter Nijenhuis</Authors>
-    <Company>Wouter Nijenhuis</Company>
-    <Copyright>Copyright © 2026</Copyright>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/wouternijenhuis/Hangfire.Storage.Oracle</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/wouternijenhuis/Hangfire.Storage.Oracle</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
-    <PackageTags>hangfire;oracle;storage;background-jobs;job-scheduling;dapper</PackageTags>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
-    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
-    <IncludeSymbols>true</IncludeSymbols>
-    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <Description>Hangfire storage provider implementation for Oracle Database using Oracle.ManagedDataAccess.Core and Dapper. Provides reliable job persistence with background processes for maintenance.</Description>
+    <PackageTags>hangfire;oracle;storage;background-jobs;job-scheduling;dapper;distributed-lock</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
+  <!-- Production dependencies (versions from Directory.Packages.props) -->
   <ItemGroup>
-    <PackageReference Include="Dapper" Version="2.1.66" />
-    <PackageReference Include="Dapper.Oracle" Version="2.0.2" />
-    <PackageReference Include="Hangfire.Core" Version="1.8.22" />
-    <PackageReference Include="Oracle.ManagedDataAccess.Core" Version="23.26.100" />
+    <PackageReference Include="Dapper" />
+    <PackageReference Include="Dapper.Oracle" />
+    <PackageReference Include="Hangfire.Core" />
+    <PackageReference Include="Oracle.ManagedDataAccess.Core" />
   </ItemGroup>
 
   <ItemGroup>

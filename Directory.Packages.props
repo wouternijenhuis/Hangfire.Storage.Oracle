@@ -1,0 +1,51 @@
+<Project>
+  <!--
+    Directory.Packages.props
+    Central Package Management (CPM) for NuGet packages.
+    All package versions are defined here to ensure consistency across all projects.
+    
+    For more information, see:
+    https://learn.microsoft.com/en-us/nuget/consume-packages/central-package-management
+  -->
+
+  <PropertyGroup>
+    <!-- Enable Central Package Management -->
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    
+    <!-- Enable transitive pinning for consistent dependency versions -->
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <!-- 
+    Production Dependencies
+    These packages are used by the main library
+  -->
+  <ItemGroup Label="Production Dependencies">
+    <PackageVersion Include="Dapper" Version="2.1.66" />
+    <PackageVersion Include="Dapper.Oracle" Version="2.0.2" />
+    <PackageVersion Include="Hangfire.Core" Version="1.8.22" />
+    <PackageVersion Include="Oracle.ManagedDataAccess.Core" Version="23.8.0" />
+  </ItemGroup>
+
+  <!-- 
+    Test Dependencies
+    These packages are used by test projects only
+  -->
+  <ItemGroup Label="Test Dependencies">
+    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageVersion Include="Moq" Version="4.20.72" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.0.2" />
+  </ItemGroup>
+
+  <!--
+    Build/Analyzer Dependencies
+    These are automatically included in all projects
+  -->
+  <ItemGroup Label="Global Analyzers">
+    <!-- Add any global analyzers here using GlobalPackageReference -->
+    <!-- Example: <GlobalPackageReference Include="SomeAnalyzer" Version="1.0.0" /> -->
+  </ItemGroup>
+
+</Project>

@@ -1,32 +1,44 @@
 using System;
+using System.Collections.Generic;
 using System.Data;
+using Hangfire.Logging;
+using Hangfire.Oracle.Core.BackgroundProcesses;
+using Hangfire.Oracle.Core.Queue;
+using Hangfire.Oracle.Core.Schema;
+using Hangfire.Server;
 using Hangfire.Storage;
 using Oracle.ManagedDataAccess.Client;
 
 namespace Hangfire.Oracle.Core;
 
 /// <summary>
-/// Oracle storage implementation for Hangfire
+/// Oracle storage implementation for Hangfire.
+/// Provides job storage, queue management, and monitoring capabilities using Oracle database.
 /// </summary>
-public class OracleStorage : JobStorage
+public class OracleStorage : JobStorage, IDisposable
 {
+    private static readonly ILog Logger = LogProvider.GetLogger(typeof(OracleStorage));
+
     private readonly string _connectionString;
     private readonly OracleStorageOptions _options;
+    private readonly Lazy<JobQueueProviderCollection> _queueProviders;
+    private string? _displayName;
+    private bool _disposed;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="OracleStorage"/> class with the specified connection string.
+    /// Initializes a new instance with the specified connection string using default options.
     /// </summary>
-    /// <param name="connectionString">Oracle database connection string</param>
+    /// <param name="connectionString">Oracle database connection string.</param>
     public OracleStorage(string connectionString)
         : this(connectionString, new OracleStorageOptions())
     {
     }
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="OracleStorage"/> class with the specified connection string and options.
+    /// Initializes a new instance with the specified connection string and options.
     /// </summary>
-    /// <param name="connectionString">Oracle database connection string</param>
-    /// <param name="options">Storage options</param>
+    /// <param name="connectionString">Oracle database connection string.</param>
+    /// <param name="options">Storage configuration options.</param>
     public OracleStorage(string connectionString, OracleStorageOptions options)
     {
         if (string.IsNullOrWhiteSpace(connectionString))
@@ -35,6 +47,9 @@ public class OracleStorage : JobStorage
         _connectionString = connectionString;
         _options = options ?? throw new ArgumentNullException(nameof(options));
 
+        _queueProviders = new Lazy<JobQueueProviderCollection>(
+            () => new JobQueueProviderCollection(new OracleJobQueueProvider(this, _options)));
+
         if (_options.PrepareSchemaIfNecessary)
         {
             InitializeSchema();
@@ -42,17 +57,22 @@ public class OracleStorage : JobStorage
     }
 
     /// <summary>
-    /// Gets the storage options
+    /// Gets the storage configuration options.
     /// </summary>
     public OracleStorageOptions Options => _options;
 
     /// <summary>
-    /// Gets the connection string
+    /// Gets the database connection string.
     /// </summary>
     public string ConnectionString => _connectionString;
 
     /// <summary>
-    /// Creates a new storage connection
+    /// Gets the collection of queue providers.
+    /// </summary>
+    public JobQueueProviderCollection QueueProviders => _queueProviders.Value;
+
+    /// <summary>
+    /// Creates a new storage connection for job operations.
     /// </summary>
     public override IStorageConnection GetConnection()
     {
@@ -60,7 +80,7 @@ public class OracleStorage : JobStorage
     }
 
     /// <summary>
-    /// Creates a new monitoring API instance
+    /// Creates a new monitoring API instance for dashboard support.
     /// </summary>
     public override IMonitoringApi GetMonitoringApi()
     {
@@ -68,17 +88,110 @@ public class OracleStorage : JobStorage
     }
 
     /// <summary>
-    /// Creates a new Oracle database connection
+    /// Gets the background server components for maintenance operations.
+    /// </summary>
+#pragma warning disable CS0618 // IServerComponent is obsolete but required for Hangfire
+    public override IEnumerable<IServerComponent> GetComponents()
+#pragma warning restore CS0618
+    {
+        yield return new CounterAggregationProcess(this, _options.CounterAggregationInterval);
+        yield return new ExpiredRecordsCleanupProcess(this, _options.JobExpirationCheckInterval);
+    }
+
+    /// <summary>
+    /// Writes storage configuration to the log.
+    /// </summary>
+    public override void WriteOptionsToLog(ILog logger)
+    {
+        logger.Info("Using Oracle storage for Hangfire with the following options:");
+        logger.InfoFormat("    Schema: {0}", _options.SchemaName ?? "(default)");
+        logger.InfoFormat("    Table prefix: {0}", _options.TablePrefix);
+        logger.InfoFormat("    Queue poll interval: {0}", _options.QueuePollInterval);
+        logger.InfoFormat("    Invisibility timeout: {0}", _options.InvisibilityTimeout);
+        logger.InfoFormat("    Job expiration check: {0}", _options.JobExpirationCheckInterval);
+        logger.InfoFormat("    Counter aggregation: {0}", _options.CounterAggregationInterval);
+    }
+
+    /// <summary>
+    /// Returns a display name for this storage instance.
+    /// </summary>
+    public override string ToString()
+    {
+        if (_displayName != null)
+            return _displayName;
+
+        _displayName = BuildDisplayName();
+        return _displayName;
+    }
+
+    /// <summary>
+    /// Creates and opens a new Oracle database connection.
     /// </summary>
     internal OracleConnection CreateAndOpenConnection()
     {
         var connection = new OracleConnection(_connectionString);
         connection.Open();
+
+        // Set schema if configured
+        if (!string.IsNullOrWhiteSpace(_options.SchemaName))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = $"ALTER SESSION SET CURRENT_SCHEMA = {_options.SchemaName}";
+            command.ExecuteNonQuery();
+        }
+
         return connection;
     }
 
     /// <summary>
-    /// Gets the table name with optional schema and prefix
+    /// Executes an operation within a database connection context.
+    /// </summary>
+    internal T ExecuteWithConnection<T>(Func<OracleConnection, T> operation)
+    {
+        using var connection = CreateAndOpenConnection();
+        return operation(connection);
+    }
+
+    /// <summary>
+    /// Executes an operation within a database transaction.
+    /// </summary>
+    internal T ExecuteInTransaction<T>(
+        Func<OracleConnection, IDbTransaction, T> operation,
+        IsolationLevel? isolationLevel = null)
+    {
+        using var connection = CreateAndOpenConnection();
+        using var transaction = connection.BeginTransaction(
+            isolationLevel ?? _options.TransactionIsolationLevel);
+
+        try
+        {
+            var result = operation(connection, transaction);
+            transaction.Commit();
+            return result;
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Executes an operation within a database transaction (void return).
+    /// </summary>
+    internal void ExecuteInTransaction(
+        Action<OracleConnection, IDbTransaction> operation,
+        IsolationLevel? isolationLevel = null)
+    {
+        ExecuteInTransaction((conn, tx) =>
+        {
+            operation(conn, tx);
+            return 0;
+        }, isolationLevel);
+    }
+
+    /// <summary>
+    /// Gets the fully qualified table name with optional schema and prefix.
     /// </summary>
     internal string GetTableName(string tableName)
     {
@@ -93,56 +206,47 @@ public class OracleStorage : JobStorage
         return fullTableName;
     }
 
+    /// <summary>
+    /// Releases resources used by the storage.
+    /// </summary>
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    /// <summary>
+    /// Releases resources used by the storage.
+    /// </summary>
+    protected virtual void Dispose(bool disposing)
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        // Clean up any resources if needed
+    }
+
     private void InitializeSchema()
     {
         using var connection = CreateAndOpenConnection();
-        
-        // Check if tables already exist
-        var checkTableSql = $@"
-            SELECT COUNT(*) 
-            FROM USER_TABLES 
-            WHERE TABLE_NAME = '{_options.TablePrefix}JOB'";
-
-        using var checkCommand = new OracleCommand(checkTableSql, connection);
-        var tableCount = Convert.ToInt32(checkCommand.ExecuteScalar());
-
-        if (tableCount > 0)
-        {
-            // Schema already exists
-            return;
-        }
-
-        // Create schema - read from embedded resource or execute creation scripts
-        var scriptContent = GetInstallScript();
-        
-        // Replace table prefix in script
-        scriptContent = scriptContent.Replace("HF_", _options.TablePrefix);
-
-        // Execute script in batches
-        var statements = scriptContent.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-        foreach (var statement in statements)
-        {
-            var trimmedStatement = statement.Trim();
-            if (string.IsNullOrWhiteSpace(trimmedStatement))
-                continue;
-
-            using var command = new OracleCommand(trimmedStatement, connection);
-            command.ExecuteNonQuery();
-        }
+        OracleSchemaManager.EnsureSchemaCreated(connection, _options.TablePrefix, _options.SchemaName);
     }
 
-    private string GetInstallScript()
+    private string BuildDisplayName()
     {
-        var assembly = typeof(OracleStorage).Assembly;
-        var resourceName = "Hangfire.Oracle.Core.Scripts.Install.sql";
-        
-        using var stream = assembly.GetManifestResourceStream(resourceName);
-        if (stream == null)
+        try
         {
-            throw new InvalidOperationException($"Could not find embedded resource: {resourceName}");
-        }
+            // Extract meaningful info from connection string for display
+            var builder = new OracleConnectionStringBuilder(_connectionString);
+            var dataSource = builder.DataSource;
 
-        using var reader = new System.IO.StreamReader(stream);
-        return reader.ReadToEnd();
+            return string.IsNullOrEmpty(dataSource)
+                ? "Hangfire.Oracle.Core"
+                : $"Hangfire.Oracle.Core: {dataSource}";
+        }
+        catch
+        {
+            return "Hangfire.Oracle.Core";
+        }
     }
 }
