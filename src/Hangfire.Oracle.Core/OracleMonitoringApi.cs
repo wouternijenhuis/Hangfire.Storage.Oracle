@@ -337,11 +337,11 @@ public class OracleMonitoringApi : IMonitoringApi
         using var connection = _storage.CreateAndOpenConnection();
 
         var counters = connection.Query<(DateTime Date, long Count)>(
-            $@"SELECT TRUNC(CREATED_AT, 'HH') AS Date, COUNT(*) AS Count
+            $@"SELECT TRUNC(CREATED_AT, 'HH24') AS Date, COUNT(*) AS Count
                FROM {_storage.GetTableName("JOB_STATE")}
                WHERE NAME = :stateName
                  AND CREATED_AT >= :startDate
-               GROUP BY TRUNC(CREATED_AT, 'HH')",
+               GROUP BY TRUNC(CREATED_AT, 'HH24')",
             new { stateName = type, startDate });
 
         foreach (var counter in counters)
