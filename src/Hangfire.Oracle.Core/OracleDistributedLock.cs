@@ -102,13 +102,13 @@ public sealed class OracleDistributedLock : IDisposable
                 // First, try to clean up and acquire in one atomic operation
                 var rowsAffected = _connection.Execute(
                     $@"MERGE INTO {_storage.GetTableName("DISTRIBUTED_LOCK")} dest
-                       USING (SELECT :resource AS resource FROM DUAL) src
-                       ON (dest.RESOURCE = src.resource)
+                       USING (SELECT :resource AS resource_name FROM DUAL) src
+                       ON (dest.RESOURCE_NAME = src.resource_name)
                        WHEN MATCHED THEN
                            UPDATE SET CREATED_AT = :createdAt
                            WHERE dest.CREATED_AT < :expirationThreshold
                        WHEN NOT MATCHED THEN
-                           INSERT (RESOURCE, CREATED_AT)
+                           INSERT (RESOURCE_NAME, CREATED_AT)
                            VALUES (:resource, :createdAt)",
                     new
                     {
@@ -175,7 +175,7 @@ public sealed class OracleDistributedLock : IDisposable
             var rowsAffected = _connection.Execute(
                 $@"UPDATE {_storage.GetTableName("DISTRIBUTED_LOCK")}
                    SET CREATED_AT = :createdAt
-                   WHERE RESOURCE = :resource",
+                   WHERE RESOURCE_NAME = :resource",
                 new { resource = _resource, createdAt = DateTime.UtcNow });
 
             return rowsAffected > 0;
@@ -201,7 +201,7 @@ public sealed class OracleDistributedLock : IDisposable
         {
             _connection.Execute(
                 $@"DELETE FROM {_storage.GetTableName("DISTRIBUTED_LOCK")}
-                   WHERE RESOURCE = :resource",
+                   WHERE RESOURCE_NAME = :resource",
                 new { resource = _resource });
 
             Logger.TraceFormat("Distributed lock released for resource '{0}'.", _resource);
