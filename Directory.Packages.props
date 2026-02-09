@@ -23,7 +23,7 @@
   <ItemGroup Label="Production Dependencies">
     <PackageVersion Include="Dapper" Version="2.1.66" />
     <PackageVersion Include="Dapper.Oracle" Version="2.0.2" />
-    <PackageVersion Include="Hangfire.Core" Version="1.8.22" />
+    <PackageVersion Include="Hangfire.Core" Version="1.8.23" />
     <PackageVersion Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageVersion Include="Oracle.ManagedDataAccess.Core" Version="23.8.0" />
   </ItemGroup>
