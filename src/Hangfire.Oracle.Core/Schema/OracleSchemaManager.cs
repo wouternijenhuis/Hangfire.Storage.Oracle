@@ -1,269 +1,367 @@
+using System.Text;
+using Dapper;
 using Oracle.ManagedDataAccess.Client;
 
 namespace Hangfire.Oracle.Core.Schema;
 
 /// <summary>
-/// Manages Oracle database schema for Hangfire storage.
-/// Handles schema creation, version tracking, and table existence checks.
+/// Installs and migrates the Oracle database objects used by Hangfire.
 /// </summary>
 public static class OracleSchemaManager
 {
     private const string SchemaVersionKey = "schema:version";
-    private const int CurrentSchemaVersion = 1;
+    private const int CurrentSchemaVersion = 2;
+
+    private static readonly string[] _requiredTables =
+    {
+        "JOB", "JOB_STATE", "JOB_PARAMETER", "JOB_QUEUE", "SERVER", "SET",
+        "COUNTER", "HASH", "LIST", "AGGREGATED_COUNTER", "DISTRIBUTED_LOCK"
+    };
+
+    private static readonly string[] _requiredSequences =
+    {
+        "JOB_SEQ", "JOB_STATE_SEQ", "JOB_PARAMETER_SEQ", "JOB_QUEUE_SEQ", "SET_SEQ",
+        "COUNTER_SEQ", "HASH_SEQ", "LIST_SEQ", "AGG_COUNTER_SEQ"
+    };
 
     /// <summary>
-    /// Ensures the Hangfire schema is created in the database.
-    /// Will skip creation if tables already exist.
+    /// Creates missing objects and applies data-preserving migrations.
     /// </summary>
-    /// <param name="connection">Open database connection.</param>
-    /// <param name="tablePrefix">Table name prefix (e.g., "HF_").</param>
-    /// <param name="schemaName">Optional schema name for multi-tenant scenarios.</param>
-    public static void EnsureSchemaCreated(OracleConnection connection, string tablePrefix = "HF_", string? schemaName = null)
+    public static void EnsureSchemaCreated(
+        OracleConnection connection,
+        string tablePrefix = "HF_",
+        string? schemaName = null)
     {
-        if (connection == null)
-        {
-            throw new ArgumentNullException(nameof(connection));
-        }
-
-        if (string.IsNullOrEmpty(tablePrefix))
-        {
-            throw new ArgumentException("Table prefix cannot be empty.", nameof(tablePrefix));
-        }
-
-        if (TablesExist(connection, tablePrefix, schemaName))
-        {
-            // Schema already exists, check for migrations if needed
-            return;
-        }
-
-        CreateSchema(connection, tablePrefix, schemaName);
+        EnsureSchemaCreated(connection, tablePrefix, schemaName, 30);
     }
 
     /// <summary>
-    /// Checks if Hangfire tables already exist in the database.
+    /// Creates missing objects and applies data-preserving migrations using the specified command timeout.
     /// </summary>
-    /// <param name="connection">Open database connection.</param>
-    /// <param name="tablePrefix">Table name prefix.</param>
-    /// <param name="schemaName">Optional schema name.</param>
-    /// <returns>True if the core tables exist.</returns>
-    public static bool TablesExist(OracleConnection connection, string tablePrefix = "HF_", string? schemaName = null)
+    public static void EnsureSchemaCreated(
+        OracleConnection connection,
+        string tablePrefix,
+        string? schemaName,
+        int commandTimeout)
     {
-        if (connection == null)
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentOutOfRangeException.ThrowIfNegative(commandTimeout);
+
+        var prefix = OracleIdentifier.ValidatePrefix(tablePrefix, nameof(tablePrefix));
+        var schema = string.IsNullOrWhiteSpace(schemaName)
+            ? null
+            : OracleIdentifier.Validate(schemaName, nameof(schemaName));
+
+        EnsureOpen(connection);
+        SetCurrentSchema(connection, schema, commandTimeout);
+
+        if (ObjectExists(connection, "TABLE", prefix + "DISTRIBUTED_LOCK", schema, commandTimeout))
         {
-            throw new ArgumentNullException(nameof(connection));
+            MigrateFromVersionOne(connection, prefix, commandTimeout);
         }
 
-        var jobTableName = $"{tablePrefix}JOB";
-        string checkSql;
-
-        if (!string.IsNullOrEmpty(schemaName))
+        foreach (var statement in SplitStatements(LoadInstallScript().Replace("HF_", prefix, StringComparison.Ordinal)))
         {
-            checkSql = @"
-                SELECT COUNT(*) 
-                FROM ALL_TABLES 
-                WHERE OWNER = :schemaName AND TABLE_NAME = :tableName";
-        }
-        else
-        {
-            checkSql = @"
-                SELECT COUNT(*) 
-                FROM USER_TABLES 
-                WHERE TABLE_NAME = :tableName";
+            ExecuteDdl(connection, statement, commandTimeout, 955);
         }
 
-        using var command = new OracleCommand(checkSql, connection);
-
-        if (!string.IsNullOrEmpty(schemaName))
-        {
-            command.Parameters.Add(new OracleParameter("schemaName", schemaName.ToUpperInvariant()));
-        }
-
-        command.Parameters.Add(new OracleParameter("tableName", jobTableName.ToUpperInvariant()));
-
-        var count = Convert.ToInt32(command.ExecuteScalar());
-        return count > 0;
+        MigrateFromVersionOne(connection, prefix, commandTimeout);
+        SetSchemaVersion(connection, prefix, commandTimeout);
+        VerifySchema(connection, prefix, schema, commandTimeout);
     }
 
     /// <summary>
-    /// Gets the current schema version from the database.
+    /// Returns whether every required table and sequence exists.
     /// </summary>
-    /// <param name="connection">Open database connection.</param>
-    /// <param name="tablePrefix">Table name prefix.</param>
-    /// <returns>The schema version, or 0 if not set.</returns>
+    public static bool TablesExist(
+        OracleConnection connection,
+        string tablePrefix = "HF_",
+        string? schemaName = null)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        var prefix = OracleIdentifier.ValidatePrefix(tablePrefix, nameof(tablePrefix));
+        var schema = string.IsNullOrWhiteSpace(schemaName)
+            ? null
+            : OracleIdentifier.Validate(schemaName, nameof(schemaName));
+
+        EnsureOpen(connection);
+        return _requiredTables.All(name => ObjectExists(connection, "TABLE", prefix + name, schema, 30))
+            && _requiredSequences.All(name => ObjectExists(connection, "SEQUENCE", prefix + name, schema, 30));
+    }
+
+    /// <summary>
+    /// Gets the installed schema version, or zero when the schema/version row is absent.
+    /// </summary>
     public static int GetSchemaVersion(OracleConnection connection, string tablePrefix = "HF_")
     {
+        ArgumentNullException.ThrowIfNull(connection);
+        var prefix = OracleIdentifier.ValidatePrefix(tablePrefix, nameof(tablePrefix));
+        EnsureOpen(connection);
+
         try
         {
-            var hashTableName = $"{tablePrefix}HASH";
-            var sql = $@"
-                SELECT VALUE 
-                FROM {hashTableName} 
-                WHERE KEY = :key AND FIELD = 'Version'";
-
-            using var command = new OracleCommand(sql, connection);
-            command.Parameters.Add(new OracleParameter("key", SchemaVersionKey));
-
-            var result = command.ExecuteScalar();
-            return result != null ? Convert.ToInt32(result) : 0;
+            var value = connection.ExecuteScalar<string?>(
+                $"SELECT VALUE FROM {prefix}HASH WHERE KEY_NAME = :key AND FIELD = 'Version'",
+                new { key = SchemaVersionKey },
+                commandTimeout: 30);
+            return int.TryParse(value, out var version) ? version : 0;
         }
-        catch
+        catch (OracleException ex) when (ex.Number == 942)
         {
-            // Table doesn't exist or other error - assume version 0
             return 0;
         }
     }
 
-    private static void CreateSchema(OracleConnection connection, string tablePrefix, string? schemaName)
+    /// <summary>
+    /// Drops all Hangfire tables and sequences in the current schema.
+    /// </summary>
+    public static void DropSchema(OracleConnection connection, string tablePrefix = "HF_")
     {
-        var script = LoadInstallScript();
+        ArgumentNullException.ThrowIfNull(connection);
+        var prefix = OracleIdentifier.ValidatePrefix(tablePrefix, nameof(tablePrefix));
+        EnsureOpen(connection);
 
-        // Apply customizations
-        script = script.Replace("HF_", tablePrefix);
-
-        if (!string.IsNullOrEmpty(schemaName))
+        foreach (var table in _requiredTables.AsEnumerable().Reverse())
         {
-            // Prefix table names with schema
-            script = AddSchemaPrefix(script, tablePrefix, schemaName);
+            ExecuteDdl(connection, $"DROP TABLE {prefix}{table} CASCADE CONSTRAINTS PURGE", 30, 942);
         }
 
-        // Execute each statement separately
-        var statements = SplitStatements(script);
-
-        foreach (var statement in statements)
+        foreach (var sequence in _requiredSequences)
         {
-            var trimmed = statement.Trim();
-            if (string.IsNullOrWhiteSpace(trimmed))
+            ExecuteDdl(connection, $"DROP SEQUENCE {prefix}{sequence}", 30, 2289);
+        }
+    }
+
+    internal static IReadOnlyList<string> SplitStatements(string script)
+    {
+        ArgumentNullException.ThrowIfNull(script);
+
+        var statements = new List<string>();
+        var current = new StringBuilder();
+        var inString = false;
+        var inLineComment = false;
+        var inBlockComment = false;
+
+        for (var index = 0; index < script.Length; index++)
+        {
+            var character = script[index];
+            var next = index + 1 < script.Length ? script[index + 1] : '\0';
+
+            if (inLineComment)
             {
+                if (character is '\r' or '\n')
+                {
+                    inLineComment = false;
+                    current.Append(' ');
+                }
+
                 continue;
             }
 
-            // Skip comments
-            if (trimmed.StartsWith("--") || trimmed.StartsWith("/*"))
+            if (inBlockComment)
             {
+                if (character == '*' && next == '/')
+                {
+                    inBlockComment = false;
+                    index++;
+                    current.Append(' ');
+                }
+
                 continue;
             }
 
-            try
+            if (!inString && character == '-' && next == '-')
             {
-                using var command = new OracleCommand(trimmed, connection);
-                command.ExecuteNonQuery();
+                inLineComment = true;
+                index++;
+                continue;
             }
-            catch (OracleException ex) when (ex.Number == 955) // ORA-00955: name already used
+
+            if (!inString && character == '/' && next == '*')
             {
-                // Object already exists, continue
+                inBlockComment = true;
+                index++;
+                continue;
             }
-            catch (OracleException ex) when (ex.Number == 942) // ORA-00942: table/view does not exist
+
+            if (character == '\'')
             {
-                // Referenced object doesn't exist yet, may happen with constraints
+                current.Append(character);
+                if (inString && next == '\'')
+                {
+                    current.Append(next);
+                    index++;
+                    continue;
+                }
+
+                inString = !inString;
+                continue;
             }
+
+            if (!inString && character == ';')
+            {
+                AddStatement(statements, current);
+                continue;
+            }
+
+            current.Append(character);
+        }
+
+        if (inString || inBlockComment)
+        {
+            throw new InvalidOperationException("The schema script contains an unterminated string or block comment.");
+        }
+
+        AddStatement(statements, current);
+        return statements;
+    }
+
+    private static void AddStatement(ICollection<string> statements, StringBuilder current)
+    {
+        var statement = current.ToString().Trim();
+        current.Clear();
+        if (statement.Length > 0)
+        {
+            statements.Add(statement);
+        }
+    }
+
+    private static void MigrateFromVersionOne(OracleConnection connection, string prefix, int commandTimeout)
+    {
+        var lockTable = prefix + "DISTRIBUTED_LOCK";
+        if (!ColumnExists(connection, lockTable, "OWNER_ID", commandTimeout))
+        {
+            ExecuteDdl(connection, $"ALTER TABLE {lockTable} ADD OWNER_ID NVARCHAR2(36)", commandTimeout, 1430);
+            connection.Execute(
+                $"UPDATE {lockTable} SET OWNER_ID = RAWTOHEX(SYS_GUID()) WHERE OWNER_ID IS NULL",
+                commandTimeout: commandTimeout);
+            ExecuteDdl(connection, $"ALTER TABLE {lockTable} MODIFY OWNER_ID NOT NULL", commandTimeout);
+        }
+
+        if (!ColumnExists(connection, lockTable, "EXPIRE_AT", commandTimeout))
+        {
+            ExecuteDdl(connection, $"ALTER TABLE {lockTable} ADD EXPIRE_AT TIMESTAMP(7)", commandTimeout, 1430);
+            connection.Execute(
+                $"UPDATE {lockTable} SET EXPIRE_AT = CREATED_AT WHERE EXPIRE_AT IS NULL",
+                commandTimeout: commandTimeout);
+            ExecuteDdl(connection, $"ALTER TABLE {lockTable} MODIFY EXPIRE_AT NOT NULL", commandTimeout);
+        }
+    }
+
+    private static void SetSchemaVersion(OracleConnection connection, string prefix, int commandTimeout)
+    {
+        connection.Execute(
+            $@"MERGE INTO {prefix}HASH h
+               USING (SELECT :key KEY_NAME, 'Version' FIELD FROM DUAL) source
+               ON (h.KEY_NAME = source.KEY_NAME AND h.FIELD = source.FIELD)
+               WHEN MATCHED THEN UPDATE SET h.VALUE = :value, h.EXPIRE_AT = NULL
+               WHEN NOT MATCHED THEN INSERT (ID, KEY_NAME, FIELD, VALUE, EXPIRE_AT)
+                 VALUES ({prefix}HASH_SEQ.NEXTVAL, :key, 'Version', :value, NULL)",
+            new { key = SchemaVersionKey, value = CurrentSchemaVersion.ToString() },
+            commandTimeout: commandTimeout);
+    }
+
+    private static void VerifySchema(
+        OracleConnection connection,
+        string prefix,
+        string? schema,
+        int commandTimeout)
+    {
+        var missing = _requiredTables
+            .Where(name => !ObjectExists(connection, "TABLE", prefix + name, schema, commandTimeout))
+            .Select(name => prefix + name)
+            .Concat(_requiredSequences
+                .Where(name => !ObjectExists(connection, "SEQUENCE", prefix + name, schema, commandTimeout))
+                .Select(name => prefix + name))
+            .ToArray();
+
+        if (missing.Length > 0)
+        {
+            throw new InvalidOperationException($"Oracle schema installation is incomplete. Missing: {string.Join(", ", missing)}.");
+        }
+    }
+
+    private static bool ObjectExists(
+        OracleConnection connection,
+        string objectType,
+        string objectName,
+        string? schema,
+        int commandTimeout)
+    {
+        var owner = schema ?? connection.ExecuteScalar<string>(
+            "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL",
+            commandTimeout: commandTimeout)
+            ?? throw new InvalidOperationException("Oracle did not return a current schema.");
+        return connection.ExecuteScalar<int>(
+            @"SELECT COUNT(*) FROM ALL_OBJECTS
+              WHERE OWNER = :owner AND OBJECT_TYPE = :objectType AND OBJECT_NAME = :objectName",
+            new { owner = owner.ToUpperInvariant(), objectType, objectName = objectName.ToUpperInvariant() },
+            commandTimeout: commandTimeout) > 0;
+    }
+
+    private static bool ColumnExists(
+        OracleConnection connection,
+        string tableName,
+        string columnName,
+        int commandTimeout)
+    {
+        var owner = connection.ExecuteScalar<string>(
+            "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL",
+            commandTimeout: commandTimeout)
+            ?? throw new InvalidOperationException("Oracle did not return a current schema.");
+        return connection.ExecuteScalar<int>(
+            @"SELECT COUNT(*) FROM ALL_TAB_COLUMNS
+              WHERE OWNER = :owner AND TABLE_NAME = :tableName AND COLUMN_NAME = :columnName",
+            new { owner = owner.ToUpperInvariant(), tableName = tableName.ToUpperInvariant(), columnName },
+            commandTimeout: commandTimeout) > 0;
+    }
+
+    private static void SetCurrentSchema(OracleConnection connection, string? schema, int commandTimeout)
+    {
+        if (schema is null)
+        {
+            return;
+        }
+
+        using var command = connection.CreateCommand();
+        command.CommandText = $"ALTER SESSION SET CURRENT_SCHEMA = {schema}";
+        command.CommandTimeout = commandTimeout;
+        command.ExecuteNonQuery();
+    }
+
+    private static void ExecuteDdl(
+        OracleConnection connection,
+        string statement,
+        int commandTimeout,
+        params int[] allowedErrorNumbers)
+    {
+        try
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = statement;
+            command.CommandTimeout = commandTimeout;
+            command.ExecuteNonQuery();
+        }
+        catch (OracleException ex) when (allowedErrorNumbers.Contains(ex.Number))
+        {
+            // The desired idempotent end-state already exists (or is already absent for drops).
+        }
+    }
+
+    private static void EnsureOpen(OracleConnection connection)
+    {
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            throw new InvalidOperationException("The Oracle connection must be open.");
         }
     }
 
     private static string LoadInstallScript()
     {
-        var assembly = typeof(OracleSchemaManager).Assembly;
-        var resourceName = "Hangfire.Oracle.Core.Scripts.Install.sql";
-
-        using var stream = assembly.GetManifestResourceStream(resourceName);
-        if (stream == null)
-        {
-            throw new InvalidOperationException(
-                $"Could not find embedded resource '{resourceName}'. " +
-                "Ensure the Install.sql file is marked as an embedded resource.");
-        }
-
+        const string ResourceName = "Hangfire.Oracle.Core.Scripts.Install.sql";
+        using var stream = typeof(OracleSchemaManager).Assembly.GetManifestResourceStream(ResourceName)
+            ?? throw new InvalidOperationException($"Could not find embedded resource '{ResourceName}'.");
         using var reader = new StreamReader(stream);
         return reader.ReadToEnd();
-    }
-
-    private static string[] SplitStatements(string script)
-    {
-        // Split on semicolons but handle PL/SQL blocks
-        return script.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-    }
-
-    private static string AddSchemaPrefix(string script, string tablePrefix, string schemaName)
-    {
-        // This is a simple implementation - might need enhancement for complex scripts
-        var tableNames = new[]
-        {
-            "JOB", "JOB_PARAMETER", "JOB_QUEUE", "JOB_STATE",
-            "SERVER", "HASH", "LIST", "SET",
-            "COUNTER", "AGGREGATED_COUNTER", "DISTRIBUTED_LOCK"
-        };
-
-        foreach (var tableName in tableNames)
-        {
-            var fullTableName = $"{tablePrefix}{tableName}";
-            script = script.Replace($" {fullTableName}", $" {schemaName}.{fullTableName}");
-            script = script.Replace($"({fullTableName}", $"({schemaName}.{fullTableName}");
-        }
-
-        return script;
-    }
-
-    /// <summary>
-    /// Drops all Hangfire tables from the database.
-    /// Use with caution - this will delete all job data.
-    /// </summary>
-    /// <param name="connection">Open database connection.</param>
-    /// <param name="tablePrefix">Table name prefix.</param>
-    public static void DropSchema(OracleConnection connection, string tablePrefix = "HF_")
-    {
-        if (connection == null)
-        {
-            throw new ArgumentNullException(nameof(connection));
-        }
-
-        // Drop in reverse dependency order
-        var tablesToDrop = new[]
-        {
-            "DISTRIBUTED_LOCK",
-            "AGGREGATED_COUNTER",
-            "COUNTER",
-            "SET",
-            "LIST",
-            "HASH",
-            "JOB_STATE",
-            "JOB_QUEUE",
-            "JOB_PARAMETER",
-            "SERVER",
-            "JOB"
-        };
-
-        foreach (var table in tablesToDrop)
-        {
-            var fullName = $"{tablePrefix}{table}";
-            try
-            {
-                using var command = new OracleCommand($"DROP TABLE {fullName} CASCADE CONSTRAINTS", connection);
-                command.ExecuteNonQuery();
-            }
-            catch (OracleException ex) when (ex.Number == 942) // Table doesn't exist
-            {
-                // Ignore - table was already dropped or never existed
-            }
-        }
-
-        // Drop sequences
-        var sequencesToDrop = new[]
-        {
-            "JOB_SEQ", "JOB_PARAMETER_SEQ", "JOB_QUEUE_SEQ", "JOB_STATE_SEQ",
-            "HASH_SEQ", "LIST_SEQ", "SET_SEQ", "COUNTER_SEQ", "AGGREGATED_COUNTER_SEQ"
-        };
-
-        foreach (var seq in sequencesToDrop)
-        {
-            var fullName = $"{tablePrefix}{seq}";
-            try
-            {
-                using var command = new OracleCommand($"DROP SEQUENCE {fullName}", connection);
-                command.ExecuteNonQuery();
-            }
-            catch (OracleException ex) when (ex.Number == 2289) // Sequence doesn't exist
-            {
-                // Ignore
-            }
-        }
     }
 }

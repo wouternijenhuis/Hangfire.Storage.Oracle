@@ -1,6 +1,6 @@
-using Dapper;
 using Hangfire.Logging;
 using Hangfire.Server;
+using Oracle.ManagedDataAccess.Client;
 
 namespace Hangfire.Oracle.Core.BackgroundProcesses;
 
@@ -67,7 +67,7 @@ internal sealed class CounterAggregationProcess : IServerComponent
         cancellationToken.WaitHandle.WaitOne(_aggregationInterval);
     }
 
-    private int ProcessBatch()
+    internal int ProcessBatch()
     {
         var counterTable = _storage.GetTableName("COUNTER");
         var aggregatedTable = _storage.GetTableName("AGGREGATED_COUNTER");
@@ -75,44 +75,55 @@ internal sealed class CounterAggregationProcess : IServerComponent
         try
         {
             using var connection = _storage.CreateAndOpenConnection();
-            using var transaction = connection.BeginTransaction();
+            using var transaction = connection.BeginTransaction(_storage.Options.TransactionIsolationLevel);
 
             try
             {
-                // Step 1: Merge counters into aggregated table
-                // Group by KEY and sum values, handling expiration
-                var mergeSql = $@"
-                    MERGE INTO {aggregatedTable} dest
-                    USING (
-                        SELECT KEY, SUM(VALUE) AS TOTAL_VALUE, MAX(EXPIRE_AT) AS MAX_EXPIRE
-                        FROM (
-                            SELECT KEY, VALUE, EXPIRE_AT
-                            FROM {counterTable}
-                            WHERE ROWNUM <= :batchSize
-                        )
-                        GROUP BY KEY
-                    ) src
-                    ON (dest.KEY = src.KEY)
-                    WHEN MATCHED THEN
-                        UPDATE SET 
-                            dest.VALUE = dest.VALUE + src.TOTAL_VALUE,
-                            dest.EXPIRE_AT = GREATEST(dest.EXPIRE_AT, src.MAX_EXPIRE)
-                    WHEN NOT MATCHED THEN
-                        INSERT (KEY, VALUE, EXPIRE_AT)
-                        VALUES (src.KEY, src.TOTAL_VALUE, src.MAX_EXPIRE)";
+                using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.BindByName = true;
+                command.CommandTimeout = _storage.Options.CommandTimeout;
+                command.CommandText = $@"DECLARE
+  CURSOR counter_rows IS
+    SELECT ID, KEY_NAME, VALUE, EXPIRE_AT
+    FROM {counterTable}
+    ORDER BY ID
+    FOR UPDATE SKIP LOCKED;
+  current_id {counterTable}.ID%TYPE;
+  current_key {counterTable}.KEY_NAME%TYPE;
+  current_value {counterTable}.VALUE%TYPE;
+  current_expire_at {counterTable}.EXPIRE_AT%TYPE;
+  processed NUMBER := 0;
+BEGIN
+  OPEN counter_rows;
+  LOOP
+    EXIT WHEN processed >= :batchSize;
+    FETCH counter_rows INTO current_id, current_key, current_value, current_expire_at;
+    EXIT WHEN counter_rows%NOTFOUND;
 
-                connection.Execute(mergeSql, new { batchSize = _batchSize }, transaction);
+    MERGE INTO {aggregatedTable} target
+    USING (SELECT current_key KEY_NAME FROM DUAL) source
+    ON (target.KEY_NAME = source.KEY_NAME)
+    WHEN MATCHED THEN UPDATE SET
+      target.VALUE = target.VALUE + current_value,
+      target.EXPIRE_AT = CASE
+        WHEN target.EXPIRE_AT IS NULL THEN current_expire_at
+        WHEN current_expire_at IS NULL THEN target.EXPIRE_AT
+        ELSE GREATEST(target.EXPIRE_AT, current_expire_at)
+      END
+    WHEN NOT MATCHED THEN INSERT (ID, KEY_NAME, VALUE, EXPIRE_AT)
+      VALUES ({_storage.GetTableName("AGG_COUNTER_SEQ")}.NEXTVAL, current_key, current_value, current_expire_at);
 
-                // Step 2: Delete the processed counter records
-                // We use a subquery to identify the exact records we just aggregated
-                var deleteSql = $@"
-                    DELETE FROM {counterTable}
-                    WHERE ROWID IN (
-                        SELECT ROWID FROM {counterTable}
-                        WHERE ROWNUM <= :batchSize
-                    )";
-
-                var deleted = connection.Execute(deleteSql, new { batchSize = _batchSize }, transaction);
+    DELETE FROM {counterTable} WHERE CURRENT OF counter_rows;
+    processed := processed + 1;
+  END LOOP;
+  CLOSE counter_rows;
+  :processed := processed;
+END;";
+                command.Parameters.Add("batchSize", OracleDbType.Int32, _batchSize, System.Data.ParameterDirection.Input);
+                command.Parameters.Add("processed", OracleDbType.Int32, System.Data.ParameterDirection.Output);
+                command.ExecuteNonQuery();
+                var deleted = Convert.ToInt32(command.Parameters["processed"].Value.ToString());
 
                 transaction.Commit();
                 return deleted;
@@ -123,7 +134,7 @@ internal sealed class CounterAggregationProcess : IServerComponent
                 throw;
             }
         }
-        catch (Exception ex)
+        catch (OracleException ex)
         {
             _logger.WarnException("Error during counter aggregation batch.", ex);
             return 0;

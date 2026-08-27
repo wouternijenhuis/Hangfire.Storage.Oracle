@@ -121,7 +121,7 @@ internal static class OracleDatabaseExtensions
         CancellationToken cancellationToken = default)
     {
         var options = storage.Options;
-        var maxAttempts = options.MaxRetryAttempts;
+        var maxAttempts = (long)options.MaxRetryAttempts + 1;
         var attempt = 0;
         Exception? lastException = null;
 
@@ -144,7 +144,7 @@ internal static class OracleDatabaseExtensions
                 }
                 catch
                 {
-                    transaction.Rollback();
+                    TryRollback(transaction);
                     throw;
                 }
             }
@@ -174,7 +174,7 @@ internal static class OracleDatabaseExtensions
         CancellationToken cancellationToken)
     {
         var options = storage.Options;
-        var maxAttempts = options.MaxRetryAttempts;
+        var maxAttempts = (long)options.MaxRetryAttempts + 1;
         var attempt = 0;
         Exception? lastException = null;
 
@@ -202,6 +202,22 @@ internal static class OracleDatabaseExtensions
         }
 
         throw lastException ?? new InvalidOperationException("Operation failed after maximum retry attempts.");
+    }
+
+    private static void TryRollback(IDbTransaction transaction)
+    {
+        try
+        {
+            transaction.Rollback();
+        }
+        catch (InvalidOperationException)
+        {
+            // Preserve the exception that caused the rollback.
+        }
+        catch (OracleException)
+        {
+            // Preserve the exception that caused the rollback.
+        }
     }
 
     /// <summary>

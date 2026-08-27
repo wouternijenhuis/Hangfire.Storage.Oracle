@@ -1,20 +1,21 @@
-name: Release
+name: CI
 
 on:
+  pull_request:
+    branches: [main]
   push:
-    tags:
-      - v1.0.4
+    branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  publish:
-    name: Validate and publish NuGet release
+  validate:
+    name: Build, Oracle test, and pack
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -37,7 +38,7 @@ jobs:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
     steps:
-      - name: Check out tagged source
+      - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -45,9 +46,6 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.400
-      - name: Validate tag and project version
-        shell: pwsh
-        run: ./eng/Assert-ReleaseVersion.ps1 -Tag '${{ github.ref_name }}'
       - name: Restore locked dependencies and audit
         run: dotnet restore Hangfire.Oracle.sln --locked-mode
       - name: Verify formatting
@@ -74,7 +72,7 @@ jobs:
         run: |
           dotnet list Hangfire.Oracle.sln package --deprecated --include-transitive --no-restore
           dotnet list Hangfire.Oracle.sln package --vulnerable --include-transitive --no-restore
-      - name: Pack tagged version
+      - name: Pack validated package
         run: >-
           dotnet pack src/Hangfire.Oracle.Core/Hangfire.Oracle.Core.csproj
           --configuration Release --no-build --no-restore
@@ -83,32 +81,16 @@ jobs:
       - name: Inspect package contents
         shell: pwsh
         run: ./eng/Verify-Package.ps1 -ArtifactsPath artifacts/package
-      - name: Smoke-install local package
+      - name: Smoke-install local package on .NET 8 and .NET 10
         shell: pwsh
         run: ./eng/Test-PackageInstall.ps1 -ArtifactsPath artifacts/package
-      - name: Publish package and symbols to NuGet.org
-        shell: pwsh
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        run: ./eng/Publish-NuGet.ps1 -ArtifactsPath artifacts/package -ApiKey $env:NUGET_API_KEY
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@c12583777ecdfd3be55c69cf75464299dc01057e # v3
-        with:
-          name: DevDad.Hangfire.Oracle 1.0.4
-          body_path: release-notes/1.0.4.md
-          files: |
-            artifacts/package/DevDad.Hangfire.Oracle.1.0.4.nupkg
-            artifacts/package/DevDad.Hangfire.Oracle.1.0.4.snupkg
-          fail_on_unmatched_files: true
-          draft: false
-          prerelease: false
-      - name: Upload immutable release artifacts
+      - name: Upload package and coverage evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: DevDad.Hangfire.Oracle-1.0.4
+          name: DevDad.Hangfire.Oracle-1.0.4-${{ github.sha }}
           path: |
-            artifacts/package/DevDad.Hangfire.Oracle.1.0.4.nupkg
-            artifacts/package/DevDad.Hangfire.Oracle.1.0.4.snupkg
+            artifacts/package/*.nupkg
+            artifacts/package/*.snupkg
             artifacts/coverage/coverage.net10.xml
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 30

@@ -1,3 +1,4 @@
+using System.Data;
 using Dapper;
 using Hangfire.Logging;
 using Hangfire.Oracle.Core.Exceptions;
@@ -6,193 +7,95 @@ using Oracle.ManagedDataAccess.Client;
 namespace Hangfire.Oracle.Core;
 
 /// <summary>
-/// Provides distributed locking capabilities using Oracle database.
-/// Supports Oracle 19c and higher with optimized locking strategies.
+/// Provides owner-aware distributed locking using a lease table or Oracle DBMS_LOCK.
 /// </summary>
-/// <remarks>
-/// <para>
-/// This implementation uses a table-based locking mechanism by default.
-/// When <see cref="OracleStorageOptions.UseDbmsLock"/> is enabled, it uses
-/// Oracle's DBMS_LOCK package for more robust distributed locking.
-/// </para>
-/// <para>
-/// Locks are automatically cleaned up when disposed or when they expire
-/// based on <see cref="OracleStorageOptions.DistributedLockTimeout"/>.
-/// </para>
-/// </remarks>
 public sealed class OracleDistributedLock : IDisposable
 {
     private static readonly ILog _logger = LogProvider.GetLogger(typeof(OracleDistributedLock));
-
     private readonly OracleStorage _storage;
     private readonly string _resource;
+    private readonly string _ownerId = Guid.NewGuid().ToString("N");
     private readonly OracleConnection _connection;
-    private readonly DateTime _acquiredAt;
+    private readonly Timer? _leaseTimer;
+    private string? _dbmsLockHandle;
     private bool _disposed;
 
-    /// <summary>
-    /// Gets the resource name this lock protects.
-    /// </summary>
+    /// <summary>Gets the protected resource name.</summary>
     public string Resource => _resource;
 
-    /// <summary>
-    /// Gets the time when this lock was acquired.
-    /// </summary>
-    public DateTime AcquiredAt => _acquiredAt;
+    /// <summary>Gets when this owner acquired the lock.</summary>
+    public DateTime AcquiredAt { get; }
 
-    /// <summary>
-    /// Initializes a new distributed lock for the specified resource.
-    /// </summary>
-    /// <param name="storage">The Oracle storage instance.</param>
-    /// <param name="resource">The resource name to lock.</param>
-    /// <param name="timeout">Maximum time to wait for lock acquisition.</param>
-    /// <exception cref="ArgumentNullException">When storage or resource is null.</exception>
-    /// <exception cref="DistributedLockAcquisitionException">When the lock cannot be acquired within the timeout.</exception>
+    /// <summary>Acquires a distributed lock for the supplied resource.</summary>
     public OracleDistributedLock(OracleStorage storage, string resource, TimeSpan timeout)
     {
         _storage = storage ?? throw new ArgumentNullException(nameof(storage));
-        _resource = resource ?? throw new ArgumentNullException(nameof(resource));
-
         if (string.IsNullOrWhiteSpace(resource))
         {
-            throw new ArgumentException("Resource name cannot be empty.", nameof(resource));
+            throw new ArgumentException("Resource names cannot be empty.", nameof(resource));
         }
 
+        if (timeout < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
+
+        _resource = resource;
         _connection = _storage.CreateAndOpenConnection();
 
         try
         {
-            AcquireLock(timeout);
-            _acquiredAt = DateTime.UtcNow;
-            _logger.TraceFormat("Distributed lock acquired for resource '{0}'.", _resource);
+            if (_storage.Options.UseDbmsLock)
+            {
+                AcquireDbmsLock(timeout);
+            }
+            else
+            {
+                AcquireTableLock(timeout);
+                var renewalInterval = TimeSpan.FromTicks(
+                    Math.Max(TimeSpan.FromSeconds(1).Ticks, _storage.Options.DistributedLockTimeout.Ticks / 3));
+                _leaseTimer = new Timer(RenewLease, null, renewalInterval, renewalInterval);
+            }
+
+            AcquiredAt = _storage.GetUtcOrLocalNow();
         }
         catch (Exception ex)
         {
-            _connection?.Dispose();
-
-            if (ex is TimeoutException)
+            _connection.Dispose();
+            if (ex is TimeoutException or OracleException)
             {
-                throw new DistributedLockAcquisitionException(
-                    _resource,
-                    timeout,
-                    ex);
+                throw new DistributedLockAcquisitionException(_resource, timeout, ex);
             }
 
             throw;
         }
     }
 
-    private void AcquireLock(TimeSpan timeout)
-    {
-        var started = DateTime.UtcNow;
-        var lockAcquired = false;
-        var attempt = 0;
-        const int MaxAttempts = 1000; // Safety limit to prevent infinite loop
-
-        while (!lockAcquired && DateTime.UtcNow - started < timeout && attempt < MaxAttempts)
-        {
-            attempt++;
-
-            try
-            {
-                // Use MERGE for atomic upsert - Oracle 19c optimized
-                // This handles the case where an expired lock exists
-                var currentTime = DateTime.UtcNow;
-                var expirationThreshold = currentTime - _storage.Options.DistributedLockTimeout;
-
-                // First, try to clean up and acquire in one atomic operation
-                var rowsAffected = _connection.Execute(
-                    $@"MERGE INTO {_storage.GetTableName("DISTRIBUTED_LOCK")} dest
-                       USING (SELECT :resource AS resource_name FROM DUAL) src
-                       ON (dest.RESOURCE_NAME = src.resource_name)
-                       WHEN MATCHED THEN
-                           UPDATE SET CREATED_AT = :createdAt
-                           WHERE dest.CREATED_AT < :expirationThreshold
-                       WHEN NOT MATCHED THEN
-                           INSERT (RESOURCE_NAME, CREATED_AT)
-                           VALUES (:resource, :createdAt)",
-                    new
-                    {
-                        resource = _resource,
-                        createdAt = currentTime,
-                        expirationThreshold
-                    });
-
-                // If MERGE affected a row, we got the lock
-                if (rowsAffected > 0)
-                {
-                    lockAcquired = true;
-                }
-                else
-                {
-                    // Lock exists and hasn't expired, wait with exponential backoff
-                    var delay = OracleErrorCodes.CalculateRetryDelay(
-                        Math.Min(attempt, 10),
-                        TimeSpan.FromMilliseconds(50),
-                        TimeSpan.FromSeconds(1));
-
-                    Thread.Sleep(delay);
-                }
-            }
-            catch (OracleException ex)
-            {
-                if (OracleErrorCodes.IsUniqueConstraintViolation(ex))
-                {
-                    // Another process acquired the lock simultaneously
-                    // This can happen in a race condition with MERGE
-                    Thread.Sleep(50);
-                }
-                else if (OracleErrorCodes.IsTransientError(ex.Number))
-                {
-                    _logger.WarnFormat("Transient error while acquiring lock: ORA-{0}", ex.Number);
-                    Thread.Sleep(100);
-                }
-                else
-                {
-                    throw;
-                }
-            }
-        }
-
-        if (!lockAcquired)
-        {
-            throw new TimeoutException(
-                $"Could not acquire distributed lock on resource '{_resource}' within {timeout.TotalSeconds:F1} seconds after {attempt} attempts.");
-        }
-    }
-
-    /// <summary>
-    /// Extends the lock timeout by updating the created timestamp.
-    /// Call this periodically during long-running operations to prevent lock expiration.
-    /// </summary>
-    /// <returns><c>true</c> if the lock was successfully extended; <c>false</c> if the lock no longer exists.</returns>
+    /// <summary>Renews this owner's lease.</summary>
     public bool Extend()
     {
-        if (_disposed)
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_storage.Options.UseDbmsLock)
         {
-            throw new ObjectDisposedException(nameof(OracleDistributedLock));
+            return _connection.State == ConnectionState.Open && _dbmsLockHandle is not null;
         }
 
-        try
-        {
-            var rowsAffected = _connection.Execute(
-                $@"UPDATE {_storage.GetTableName("DISTRIBUTED_LOCK")}
-                   SET CREATED_AT = :createdAt
-                   WHERE RESOURCE_NAME = :resource",
-                new { resource = _resource, createdAt = DateTime.UtcNow });
-
-            return rowsAffected > 0;
-        }
-        catch (OracleException ex)
-        {
-            _logger.WarnException($"Failed to extend lock for resource '{_resource}'.", ex);
-            return false;
-        }
+        var now = _storage.GetUtcOrLocalNow();
+        return _connection.Execute(
+            $@"UPDATE {_storage.GetTableName("DISTRIBUTED_LOCK")}
+               SET CREATED_AT = :createdAt, EXPIRE_AT = :expireAt
+               WHERE RESOURCE_NAME = :resourceName AND OWNER_ID = :ownerId",
+            new
+            {
+                resourceName = _resource,
+                ownerId = _ownerId,
+                createdAt = now,
+                expireAt = now.Add(_storage.Options.DistributedLockTimeout)
+            },
+            commandTimeout: _storage.Options.CommandTimeout) == 1;
     }
 
-    /// <summary>
-    /// Releases the distributed lock.
-    /// </summary>
+    /// <summary>Releases the lock only when it is still owned by this instance.</summary>
     public void Dispose()
     {
         if (_disposed)
@@ -201,31 +104,153 @@ public sealed class OracleDistributedLock : IDisposable
         }
 
         _disposed = true;
+        _leaseTimer?.Dispose();
 
         try
         {
-            _connection.Execute(
-                $@"DELETE FROM {_storage.GetTableName("DISTRIBUTED_LOCK")}
-                   WHERE RESOURCE_NAME = :resource",
-                new { resource = _resource });
-
-            _logger.TraceFormat("Distributed lock released for resource '{0}'.", _resource);
+            if (_storage.Options.UseDbmsLock)
+            {
+                ReleaseDbmsLock();
+            }
+            else
+            {
+                _connection.Execute(
+                    $@"DELETE FROM {_storage.GetTableName("DISTRIBUTED_LOCK")}
+                       WHERE RESOURCE_NAME = :resourceName AND OWNER_ID = :ownerId",
+                    new { resourceName = _resource, ownerId = _ownerId },
+                    commandTimeout: _storage.Options.CommandTimeout);
+            }
         }
         catch (OracleException ex)
         {
-            // Log but don't throw - lock will eventually expire
-            _logger.WarnException($"Error releasing lock for resource '{_resource}'.", ex);
+            _logger.WarnException($"Could not release distributed lock '{_resource}'.", ex);
         }
         finally
         {
+            _connection.Dispose();
+        }
+    }
+
+    private void AcquireTableLock(TimeSpan timeout)
+    {
+        var started = DateTime.UtcNow;
+        var attempt = 0;
+
+        while (DateTime.UtcNow - started <= timeout)
+        {
+            attempt++;
+            var now = _storage.GetUtcOrLocalNow();
+
             try
             {
-                _connection?.Dispose();
+                var affected = _connection.Execute(
+                    $@"MERGE INTO {_storage.GetTableName("DISTRIBUTED_LOCK")} target
+                       USING (SELECT :resourceName RESOURCE_NAME FROM DUAL) source
+                       ON (target.RESOURCE_NAME = source.RESOURCE_NAME)
+                       WHEN MATCHED THEN UPDATE SET
+                         target.OWNER_ID = :ownerId,
+                         target.CREATED_AT = :createdAt,
+                         target.EXPIRE_AT = :expireAt
+                         WHERE target.EXPIRE_AT <= :createdAt
+                       WHEN NOT MATCHED THEN INSERT (RESOURCE_NAME, OWNER_ID, CREATED_AT, EXPIRE_AT)
+                         VALUES (:resourceName, :ownerId, :createdAt, :expireAt)",
+                    new
+                    {
+                        resourceName = _resource,
+                        ownerId = _ownerId,
+                        createdAt = now,
+                        expireAt = now.Add(_storage.Options.DistributedLockTimeout)
+                    },
+                    commandTimeout: _storage.Options.CommandTimeout);
+
+                if (affected == 1)
+                {
+                    return;
+                }
             }
-            catch
+            catch (OracleException ex) when (
+                OracleErrorCodes.IsUniqueConstraintViolation(ex)
+                || OracleErrorCodes.IsTransientError(ex.Number))
             {
-                // Ignore connection disposal errors
+                _logger.DebugFormat("Lock contention for '{0}' (ORA-{1}).", _resource, ex.Number);
             }
+
+            var remaining = timeout - (DateTime.UtcNow - started);
+            if (remaining <= TimeSpan.Zero)
+            {
+                break;
+            }
+
+            var delay = OracleErrorCodes.CalculateRetryDelay(
+                Math.Min(attempt, 8),
+                TimeSpan.FromMilliseconds(25),
+                TimeSpan.FromSeconds(1));
+            Thread.Sleep(remaining < delay ? remaining : delay);
+        }
+
+        throw new TimeoutException($"Could not acquire distributed lock '{_resource}' within {timeout}.");
+    }
+
+    private void AcquireDbmsLock(TimeSpan timeout)
+    {
+        using var command = _connection.CreateCommand();
+        command.BindByName = true;
+        command.CommandTimeout = Math.Max(_storage.Options.CommandTimeout, (int)Math.Ceiling(timeout.TotalSeconds) + 5);
+        command.CommandText = @"DECLARE
+  result NUMBER;
+BEGIN
+  DBMS_LOCK.ALLOCATE_UNIQUE(:lockName, :lockHandle);
+  result := DBMS_LOCK.REQUEST(:lockHandle, DBMS_LOCK.X_MODE, :timeoutSeconds, FALSE);
+  :result := result;
+END;";
+        command.Parameters.Add("lockName", OracleDbType.Varchar2, $"Hangfire:{_resource}", ParameterDirection.Input);
+        command.Parameters.Add("lockHandle", OracleDbType.Varchar2, 128, null, ParameterDirection.InputOutput);
+        command.Parameters.Add("timeoutSeconds", OracleDbType.Int32, (int)Math.Ceiling(timeout.TotalSeconds), ParameterDirection.Input);
+        command.Parameters.Add("result", OracleDbType.Int32, ParameterDirection.Output);
+        command.ExecuteNonQuery();
+
+        var result = Convert.ToInt32(command.Parameters["result"].Value.ToString());
+        if (result is not (0 or 4))
+        {
+            throw new TimeoutException($"DBMS_LOCK.REQUEST returned status {result} for '{_resource}'.");
+        }
+
+        _dbmsLockHandle = command.Parameters["lockHandle"].Value.ToString();
+    }
+
+    private void ReleaseDbmsLock()
+    {
+        if (_dbmsLockHandle is null)
+        {
+            return;
+        }
+
+        using var command = _connection.CreateCommand();
+        command.BindByName = true;
+        command.CommandTimeout = _storage.Options.CommandTimeout;
+        command.CommandText = "BEGIN :result := DBMS_LOCK.RELEASE(:lockHandle); END;";
+        command.Parameters.Add("result", OracleDbType.Int32, ParameterDirection.Output);
+        command.Parameters.Add("lockHandle", OracleDbType.Varchar2, _dbmsLockHandle, ParameterDirection.Input);
+        command.ExecuteNonQuery();
+    }
+
+    private void RenewLease(object? state)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!Extend())
+            {
+                _logger.WarnFormat("Distributed lock '{0}' is no longer owned by this instance.", _resource);
+            }
+        }
+        catch (OracleException ex)
+        {
+            _logger.WarnException($"Could not renew distributed lock '{_resource}'.", ex);
         }
     }
 }

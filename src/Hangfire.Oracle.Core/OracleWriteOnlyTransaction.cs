@@ -44,7 +44,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
     public OracleWriteOnlyTransaction(OracleStorage storage)
     {
         _storage = storage ?? throw new ArgumentNullException(nameof(storage));
-        _commandTimeout = storage.Options.CommandTimeout;
+        _commandTimeout = storage.TransactionCommandTimeout;
     }
 
     /// <summary>
@@ -71,12 +71,13 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
             }
 
             transaction.Commit();
+            _commandQueue.Clear();
 
             _logger.TraceFormat("Committed transaction with {0} commands.", commandCount);
         }
         catch (OracleException ex)
         {
-            transaction.Rollback();
+            TryRollback(transaction);
 
             if (OracleErrorCodes.IsTransientError(ex.Number))
             {
@@ -87,7 +88,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
         }
         catch
         {
-            transaction.Rollback();
+            TryRollback(transaction);
             throw;
         }
     }
@@ -117,12 +118,13 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
                 }
 
                 transaction.Commit();
+                _commandQueue.Clear();
 
                 _logger.TraceFormat("Committed async transaction with {0} commands.", commandCount);
             }
             catch (OracleException ex)
             {
-                transaction.Rollback();
+                TryRollback(transaction);
 
                 if (OracleErrorCodes.IsTransientError(ex.Number))
                 {
@@ -133,7 +135,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
             }
             catch
             {
-                transaction.Rollback();
+                TryRollback(transaction);
                 throw;
             }
         }
@@ -148,7 +150,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
                 $@"UPDATE {_storage.GetTableName("JOB")}
                    SET EXPIRE_AT = :expireAt
                    WHERE ID = :id",
-                new { id = long.Parse(jobId), expireAt = DateTime.UtcNow.Add(expireIn) },
+                new { id = long.Parse(jobId), expireAt = _storage.GetUtcOrLocalNow().Add(expireIn) },
                 transaction: transaction,
                 commandTimeout: _commandTimeout);
         });
@@ -186,7 +188,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
                     jobId = long.Parse(jobId),
                     name = state.Name,
                     reason = state.Reason,
-                    createdAt = DateTime.UtcNow,
+                    createdAt = _storage.GetUtcOrLocalNow(),
                     data = SerializeStateData(state)
                 },
                 transaction: transaction,
@@ -220,7 +222,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
                     jobId = long.Parse(jobId),
                     name = state.Name,
                     reason = state.Reason,
-                    createdAt = DateTime.UtcNow,
+                    createdAt = _storage.GetUtcOrLocalNow(),
                     data = SerializeStateData(state)
                 },
                 transaction: transaction,
@@ -264,7 +266,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
             connection.Execute(
                 $@"INSERT INTO {_storage.GetTableName("COUNTER")} (ID, KEY_NAME, VALUE, EXPIRE_AT)
                    VALUES ({_storage.GetTableName("COUNTER_SEQ")}.NEXTVAL, :key, 1, :expireAt)",
-                new { key, expireAt = DateTime.UtcNow.Add(expireIn) },
+                new { key, expireAt = _storage.GetUtcOrLocalNow().Add(expireIn) },
                 transaction: transaction,
                 commandTimeout: _commandTimeout);
         });
@@ -292,7 +294,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
             connection.Execute(
                 $@"INSERT INTO {_storage.GetTableName("COUNTER")} (ID, KEY_NAME, VALUE, EXPIRE_AT)
                    VALUES ({_storage.GetTableName("COUNTER_SEQ")}.NEXTVAL, :key, -1, :expireAt)",
-                new { key, expireAt = DateTime.UtcNow.Add(expireIn) },
+                new { key, expireAt = _storage.GetUtcOrLocalNow().Add(expireIn) },
                 transaction: transaction,
                 commandTimeout: _commandTimeout);
         });
@@ -358,8 +360,8 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
         {
             connection.Execute(
                 $@"DELETE FROM {_storage.GetTableName("LIST")}
-                   WHERE KEY_NAME = :key AND VALUE = :value",
-                new { key, value },
+                   WHERE KEY_NAME = :key AND DBMS_LOB.COMPARE(VALUE, TO_NCLOB(:listValue)) = 0",
+                new { key, listValue = value },
                 transaction: transaction,
                 commandTimeout: _commandTimeout);
         });
@@ -441,7 +443,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
                 $@"UPDATE {_storage.GetTableName("SET")}
                    SET EXPIRE_AT = :expireAt
                    WHERE KEY_NAME = :key",
-                new { key, expireAt = DateTime.UtcNow.Add(expireIn) },
+                new { key, expireAt = _storage.GetUtcOrLocalNow().Add(expireIn) },
                 transaction: transaction,
                 commandTimeout: _commandTimeout);
         });
@@ -458,7 +460,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
                 $@"UPDATE {_storage.GetTableName("HASH")}
                    SET EXPIRE_AT = :expireAt
                    WHERE KEY_NAME = :key",
-                new { key, expireAt = DateTime.UtcNow.Add(expireIn) },
+                new { key, expireAt = _storage.GetUtcOrLocalNow().Add(expireIn) },
                 transaction: transaction,
                 commandTimeout: _commandTimeout);
         });
@@ -475,7 +477,7 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
                 $@"UPDATE {_storage.GetTableName("LIST")}
                    SET EXPIRE_AT = :expireAt
                    WHERE KEY_NAME = :key",
-                new { key, expireAt = DateTime.UtcNow.Add(expireIn) },
+                new { key, expireAt = _storage.GetUtcOrLocalNow().Add(expireIn) },
                 transaction: transaction,
                 commandTimeout: _commandTimeout);
         });
@@ -551,5 +553,21 @@ public class OracleWriteOnlyTransaction : JobStorageTransaction
             Description = description,
             Execute = execute
         });
+    }
+
+    private static void TryRollback(OracleTransaction transaction)
+    {
+        try
+        {
+            transaction.Rollback();
+        }
+        catch (InvalidOperationException)
+        {
+            // Preserve the exception that caused the rollback.
+        }
+        catch (OracleException)
+        {
+            // Preserve the exception that caused the rollback.
+        }
     }
 }

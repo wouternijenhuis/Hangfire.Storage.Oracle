@@ -1,6 +1,6 @@
 -- =============================================
 -- Hangfire Oracle Database Schema Installation Script
--- Compatible with Oracle 11g, 12c, 18c, 19c, 21c, 23ai
+-- Compatible with Oracle Database 19c and later
 -- =============================================
 -- Note: This script uses Oracle 11g compatible syntax.
 -- For Oracle 12c+ specific features, see the version-specific scripts.
@@ -157,8 +157,10 @@ CREATE INDEX IX_HF_AGG_COUNTER_EXPIRE ON HF_AGGREGATED_COUNTER (EXPIRE_AT);
 -- Note: Using RESOURCE_NAME instead of RESOURCE as RESOURCE is a reserved word in Oracle
 CREATE TABLE HF_DISTRIBUTED_LOCK (
     RESOURCE_NAME NVARCHAR2(100) NOT NULL,
+    OWNER_ID NVARCHAR2(36) NOT NULL,
     CREATED_AT TIMESTAMP(7) NOT NULL,
+    EXPIRE_AT TIMESTAMP(7) NOT NULL,
     CONSTRAINT PK_HF_DISTRIBUTED_LOCK PRIMARY KEY (RESOURCE_NAME)
 );
 
-CREATE INDEX IX_HF_DIST_LOCK_CREATED ON HF_DISTRIBUTED_LOCK (CREATED_AT);
+CREATE INDEX IX_HF_DIST_LOCK_EXPIRE ON HF_DISTRIBUTED_LOCK (EXPIRE_AT);
