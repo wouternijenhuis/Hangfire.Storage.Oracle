@@ -63,8 +63,7 @@ public class OracleStorageOptions
     public IsolationLevel TransactionIsolationLevel { get; set; } = IsolationLevel.ReadCommitted;
 
     /// <summary>
-    /// Gets or sets the timeout for database transactions.
-    /// Long-running operations will be aborted after this period.
+    /// Gets or sets the upper timeout bound for commands executed by a database transaction.
     /// Default is 1 minute.
     /// </summary>
     public TimeSpan TransactionTimeout { get; set; } = TimeSpan.FromMinutes(1);
@@ -266,7 +265,7 @@ public class OracleStorageOptions
     /// <summary>
     /// Gets or sets the minimum Oracle database version to target.
     /// This enables version-specific SQL optimizations.
-    /// Default is <see cref="OracleDatabaseVersion.Oracle12c"/>.
+    /// Default is <see cref="OracleDatabaseVersion.Oracle19c"/>.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -277,7 +276,7 @@ public class OracleStorageOptions
     /// Oracle 12c+ enables <c>FETCH FIRST</c> syntax. Oracle 19c+ enables <c>SKIP LOCKED</c>.
     /// </para>
     /// </remarks>
-    public OracleDatabaseVersion MinimumDatabaseVersion { get; set; } = OracleDatabaseVersion.Oracle12c;
+    public OracleDatabaseVersion MinimumDatabaseVersion { get; set; } = OracleDatabaseVersion.Oracle19c;
 
     /// <summary>
     /// Gets or sets whether to enable Oracle statement caching at the connection level.
@@ -317,16 +316,57 @@ public class OracleStorageOptions
     public bool SupportsFetchFirst => MinimumDatabaseVersion >= OracleDatabaseVersion.Oracle12c;
 
     /// <summary>
-    /// Gets whether the target Oracle version supports partial indexes with WHERE clause.
-    /// This feature is available in Oracle 12c and later.
+    /// Gets whether the target Oracle version supports partial indexes with a WHERE clause.
+    /// Oracle does not support this syntax, so this value is always <see langword="false"/>.
     /// </summary>
-    public bool SupportsPartialIndexes => MinimumDatabaseVersion >= OracleDatabaseVersion.Oracle12c;
+    public bool SupportsPartialIndexes => false;
 
     /// <summary>
     /// Gets whether the target Oracle version supports MERGE with DELETE clause.
     /// This feature is available in Oracle 10g and later.
     /// </summary>
     public bool SupportsMerge => true;
+
+    internal void Validate()
+    {
+        TablePrefix = OracleIdentifier.ValidatePrefix(TablePrefix, nameof(TablePrefix));
+        if (!string.IsNullOrWhiteSpace(SchemaName))
+        {
+            SchemaName = OracleIdentifier.Validate(SchemaName, nameof(SchemaName));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(CommandTimeout);
+        ArgumentOutOfRangeException.ThrowIfNegative(MaxRetryAttempts);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(FetchCount);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(CleanupBatchSize);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(DashboardJobListLimit);
+        ArgumentOutOfRangeException.ThrowIfNegative(StatementCacheSize);
+
+        EnsurePositive(TransactionTimeout, nameof(TransactionTimeout));
+        EnsurePositive(RetryDelay, nameof(RetryDelay), allowZero: true);
+        EnsurePositive(InvisibilityTimeout, nameof(InvisibilityTimeout));
+        EnsurePositive(QueuePollInterval, nameof(QueuePollInterval), allowZero: true);
+        EnsurePositive(SlidingInvisibilityTimeout, nameof(SlidingInvisibilityTimeout));
+        EnsurePositive(DistributedLockTimeout, nameof(DistributedLockTimeout));
+        EnsurePositive(JobExpirationCheckInterval, nameof(JobExpirationCheckInterval));
+        EnsurePositive(CounterAggregationInterval, nameof(CounterAggregationInterval));
+
+        if (MinimumDatabaseVersion < OracleDatabaseVersion.Oracle19c)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(MinimumDatabaseVersion),
+                MinimumDatabaseVersion,
+                "DevDad.Hangfire.Oracle 1.0.4 supports Oracle Database 19c and later.");
+        }
+    }
+
+    private static void EnsurePositive(TimeSpan value, string parameterName, bool allowZero = false)
+    {
+        if (value < TimeSpan.Zero || (!allowZero && value == TimeSpan.Zero))
+        {
+            throw new ArgumentOutOfRangeException(parameterName, value, "The duration must be positive.");
+        }
+    }
 }
 
 /// <summary>

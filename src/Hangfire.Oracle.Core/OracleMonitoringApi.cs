@@ -26,9 +26,14 @@ public class OracleMonitoringApi : IMonitoringApi
         var stats = new StatisticsDto();
 
         var counters = connection.Query<(string Key, long Value)>(
-            $@"SELECT KEY_NAME AS Key, SUM(VALUE) AS Value 
-               FROM {_storage.GetTableName("COUNTER")}
-               GROUP BY KEY_NAME");
+            $@"SELECT KEY_NAME COUNTER_KEY, SUM(VALUE) TOTAL_VALUE
+               FROM (
+                 SELECT KEY_NAME, VALUE FROM {_storage.GetTableName("COUNTER")}
+                 UNION ALL
+                 SELECT KEY_NAME, VALUE FROM {_storage.GetTableName("AGGREGATED_COUNTER")}
+               )
+               GROUP BY KEY_NAME",
+            commandTimeout: _storage.Options.CommandTimeout);
 
         foreach (var counter in counters)
         {
@@ -44,29 +49,36 @@ public class OracleMonitoringApi : IMonitoringApi
 
         stats.Enqueued = connection.ExecuteScalar<long>(
             $@"SELECT COUNT(*) FROM {_storage.GetTableName("JOB")}
-               WHERE STATE_NAME = 'Enqueued'");
+               WHERE STATE_NAME = 'Enqueued'",
+            commandTimeout: _storage.Options.CommandTimeout);
 
         stats.Failed = connection.ExecuteScalar<long>(
             $@"SELECT COUNT(*) FROM {_storage.GetTableName("JOB")}
-               WHERE STATE_NAME = 'Failed'");
+               WHERE STATE_NAME = 'Failed'",
+            commandTimeout: _storage.Options.CommandTimeout);
 
         stats.Processing = connection.ExecuteScalar<long>(
             $@"SELECT COUNT(*) FROM {_storage.GetTableName("JOB")}
-               WHERE STATE_NAME = 'Processing'");
+               WHERE STATE_NAME = 'Processing'",
+            commandTimeout: _storage.Options.CommandTimeout);
 
         stats.Scheduled = connection.ExecuteScalar<long>(
             $@"SELECT COUNT(*) FROM {_storage.GetTableName("JOB")}
-               WHERE STATE_NAME = 'Scheduled'");
+               WHERE STATE_NAME = 'Scheduled'",
+            commandTimeout: _storage.Options.CommandTimeout);
 
         stats.Servers = connection.ExecuteScalar<long>(
-            $@"SELECT COUNT(*) FROM {_storage.GetTableName("SERVER")}");
+            $@"SELECT COUNT(*) FROM {_storage.GetTableName("SERVER")}",
+            commandTimeout: _storage.Options.CommandTimeout);
 
         stats.Queues = connection.ExecuteScalar<long>(
-            $@"SELECT COUNT(DISTINCT QUEUE) FROM {_storage.GetTableName("JOB_QUEUE")}");
+            $@"SELECT COUNT(DISTINCT QUEUE) FROM {_storage.GetTableName("JOB_QUEUE")}",
+            commandTimeout: _storage.Options.CommandTimeout);
 
         stats.Recurring = connection.ExecuteScalar<long>(
             $@"SELECT COUNT(*) FROM {_storage.GetTableName("SET")}
-               WHERE KEY_NAME = 'recurring-jobs'");
+               WHERE KEY_NAME = 'recurring-jobs'",
+            commandTimeout: _storage.Options.CommandTimeout);
 
         return stats;
     }
@@ -95,7 +107,9 @@ public class OracleMonitoringApi : IMonitoringApi
                 {
                     Job = job,
                     ServerId = serverId,
-                    StartedAt = JobHelper.DeserializeDateTime(state.Data["StartedAt"])
+                    StartedAt = GetDateTime(state.Data, "StartedAt"),
+                    InProcessingState = string.Equals(state.Name, "Processing", StringComparison.Ordinal),
+                    StateData = state.Data
                 };
             });
     }
@@ -106,14 +120,13 @@ public class OracleMonitoringApi : IMonitoringApi
         return GetJobs<ScheduledJobDto>(from, count, "Scheduled",
             (job, state) =>
             {
-                state.Data.TryGetValue("ScheduledAt", out var scheduledAtString);
-                state.Data.TryGetValue("EnqueueAt", out var enqueueAtString);
-
                 return new ScheduledJobDto
                 {
                     Job = job,
-                    EnqueueAt = JobHelper.DeserializeDateTime(enqueueAtString),
-                    ScheduledAt = JobHelper.DeserializeDateTime(scheduledAtString ?? enqueueAtString)
+                    EnqueueAt = GetDateTime(state.Data, "EnqueueAt") ?? DateTime.MinValue,
+                    ScheduledAt = GetDateTime(state.Data, "ScheduledAt") ?? GetDateTime(state.Data, "EnqueueAt"),
+                    InScheduledState = string.Equals(state.Name, "Scheduled", StringComparison.Ordinal),
+                    StateData = state.Data
                 };
             });
     }
@@ -138,7 +151,9 @@ public class OracleMonitoringApi : IMonitoringApi
                     Job = job,
                     Result = result,
                     TotalDuration = totalDuration,
-                    SucceededAt = JobHelper.DeserializeDateTime(state.Data["SucceededAt"])
+                    SucceededAt = GetDateTime(state.Data, "SucceededAt"),
+                    InSucceededState = string.Equals(state.Name, "Succeeded", StringComparison.Ordinal),
+                    StateData = state.Data
                 };
             });
     }
@@ -147,14 +162,22 @@ public class OracleMonitoringApi : IMonitoringApi
     public JobList<FailedJobDto> FailedJobs(int from, int count)
     {
         return GetJobs<FailedJobDto>(from, count, "Failed",
-            (job, state) => new FailedJobDto
+            (job, state) =>
             {
-                Job = job,
-                Reason = state.Reason,
-                ExceptionDetails = state.Data["ExceptionDetails"],
-                ExceptionMessage = state.Data["ExceptionMessage"],
-                ExceptionType = state.Data["ExceptionType"],
-                FailedAt = JobHelper.DeserializeDateTime(state.Data["FailedAt"])
+                state.Data.TryGetValue("ExceptionDetails", out var exceptionDetails);
+                state.Data.TryGetValue("ExceptionMessage", out var exceptionMessage);
+                state.Data.TryGetValue("ExceptionType", out var exceptionType);
+                return new FailedJobDto
+                {
+                    Job = job,
+                    Reason = state.Reason,
+                    ExceptionDetails = exceptionDetails,
+                    ExceptionMessage = exceptionMessage,
+                    ExceptionType = exceptionType,
+                    FailedAt = GetDateTime(state.Data, "FailedAt"),
+                    InFailedState = string.Equals(state.Name, "Failed", StringComparison.Ordinal),
+                    StateData = state.Data
+                };
             });
     }
 
@@ -164,12 +187,12 @@ public class OracleMonitoringApi : IMonitoringApi
         return GetJobs<DeletedJobDto>(from, count, "Deleted",
             (job, state) =>
             {
-                state.Data.TryGetValue("DeletedAt", out var deletedAt);
-
                 return new DeletedJobDto
                 {
                     Job = job,
-                    DeletedAt = JobHelper.DeserializeDateTime(deletedAt)
+                    DeletedAt = GetDateTime(state.Data, "DeletedAt"),
+                    InDeletedState = string.Equals(state.Name, "Deleted", StringComparison.Ordinal),
+                    StateData = state.Data
                 };
             });
     }
@@ -182,7 +205,8 @@ public class OracleMonitoringApi : IMonitoringApi
         return connection.ExecuteScalar<long>(
             $@"SELECT COUNT(*) FROM {_storage.GetTableName("JOB_QUEUE")}
                WHERE QUEUE = :queue AND FETCHED_AT IS NULL",
-            new { queue });
+            new { queue },
+            commandTimeout: _storage.Options.CommandTimeout);
     }
 
     /// <inheritdoc/>
@@ -193,7 +217,8 @@ public class OracleMonitoringApi : IMonitoringApi
         return connection.ExecuteScalar<long>(
             $@"SELECT COUNT(*) FROM {_storage.GetTableName("JOB_QUEUE")}
                WHERE QUEUE = :queue AND FETCHED_AT IS NOT NULL",
-            new { queue });
+            new { queue },
+            commandTimeout: _storage.Options.CommandTimeout);
     }
 
     /// <inheritdoc/>
@@ -229,25 +254,25 @@ public class OracleMonitoringApi : IMonitoringApi
     /// <inheritdoc/>
     public IDictionary<DateTime, long> SucceededByDatesCount()
     {
-        return GetTimelineStats("succeeded");
+        return GetTimelineStats("Succeeded");
     }
 
     /// <inheritdoc/>
     public IDictionary<DateTime, long> FailedByDatesCount()
     {
-        return GetTimelineStats("failed");
+        return GetTimelineStats("Failed");
     }
 
     /// <inheritdoc/>
     public IDictionary<DateTime, long> HourlySucceededJobs()
     {
-        return GetHourlyTimelineStats("succeeded");
+        return GetHourlyTimelineStats("Succeeded");
     }
 
     /// <inheritdoc/>
     public IDictionary<DateTime, long> HourlyFailedJobs()
     {
-        return GetHourlyTimelineStats("failed");
+        return GetHourlyTimelineStats("Failed");
     }
 
     /// <inheritdoc/>
@@ -257,7 +282,8 @@ public class OracleMonitoringApi : IMonitoringApi
 
         var servers = connection.Query(
             $@"SELECT ID, DATA, LAST_HEARTBEAT
-               FROM {_storage.GetTableName("SERVER")}");
+               FROM {_storage.GetTableName("SERVER")}",
+            commandTimeout: _storage.Options.CommandTimeout);
 
         return servers.Select(x =>
         {
@@ -288,7 +314,8 @@ public class OracleMonitoringApi : IMonitoringApi
         using var connection = _storage.CreateAndOpenConnection();
 
         var queues = connection.Query<string>(
-            $@"SELECT DISTINCT QUEUE FROM {_storage.GetTableName("JOB_QUEUE")}")
+            $@"SELECT DISTINCT QUEUE FROM {_storage.GetTableName("JOB_QUEUE")}",
+            commandTimeout: _storage.Options.CommandTimeout)
             .ToList();
 
         return queues.Select(queue => new QueueWithTopEnqueuedJobsDto
@@ -309,7 +336,8 @@ public class OracleMonitoringApi : IMonitoringApi
             $@"SELECT INVOCATION_DATA, ARGUMENTS, CREATED_AT, EXPIRE_AT, STATE_NAME
                FROM {_storage.GetTableName("JOB")}
                WHERE ID = :id",
-            new { id = long.Parse(jobId) })
+            new { id = long.Parse(jobId) },
+            commandTimeout: _storage.Options.CommandTimeout)
             .SingleOrDefault();
 
         if (job == null)
@@ -322,7 +350,8 @@ public class OracleMonitoringApi : IMonitoringApi
                FROM {_storage.GetTableName("JOB_STATE")}
                WHERE JOB_ID = :jobId
                ORDER BY CREATED_AT DESC",
-            new { jobId = long.Parse(jobId) })
+            new { jobId = long.Parse(jobId) },
+            commandTimeout: _storage.Options.CommandTimeout)
             .ToList();
 
         var invocationData = JobHelper.FromJson<InvocationData>(job.INVOCATION_DATA);
@@ -351,12 +380,13 @@ public class OracleMonitoringApi : IMonitoringApi
         return connection.ExecuteScalar<long>(
             $@"SELECT COUNT(*) FROM {_storage.GetTableName("JOB")}
                WHERE STATE_NAME = :state",
-            new { state = stateName });
+            new { state = stateName },
+            commandTimeout: _storage.Options.CommandTimeout);
     }
 
     private Dictionary<DateTime, long> GetTimelineStats(string type)
     {
-        var endDate = DateTime.UtcNow.Date;
+        var endDate = _storage.GetUtcOrLocalNow().Date;
         var startDate = endDate.AddDays(-7);
         var dates = new Dictionary<DateTime, long>();
 
@@ -368,12 +398,13 @@ public class OracleMonitoringApi : IMonitoringApi
         using var connection = _storage.CreateAndOpenConnection();
 
         var counters = connection.Query<(DateTime Date, long Count)>(
-            $@"SELECT TRUNC(CREATED_AT) AS Date, COUNT(*) AS Count
+            $@"SELECT TRUNC(CREATED_AT) STATE_DATE, COUNT(*) TOTAL_COUNT
                FROM {_storage.GetTableName("JOB_STATE")}
                WHERE NAME = :stateName
                  AND CREATED_AT >= :startDate
                GROUP BY TRUNC(CREATED_AT)",
-            new { stateName = type, startDate });
+            new { stateName = type, startDate },
+            commandTimeout: _storage.Options.CommandTimeout);
 
         foreach (var counter in counters)
         {
@@ -385,7 +416,7 @@ public class OracleMonitoringApi : IMonitoringApi
 
     private Dictionary<DateTime, long> GetHourlyTimelineStats(string type)
     {
-        var endDate = DateTime.UtcNow;
+        var endDate = _storage.GetUtcOrLocalNow();
         var startDate = endDate.AddHours(-24);
         var hours = new Dictionary<DateTime, long>();
 
@@ -397,12 +428,13 @@ public class OracleMonitoringApi : IMonitoringApi
         using var connection = _storage.CreateAndOpenConnection();
 
         var counters = connection.Query<(DateTime Date, long Count)>(
-            $@"SELECT TRUNC(CREATED_AT, 'HH24') AS Date, COUNT(*) AS Count
+            $@"SELECT TRUNC(CREATED_AT, 'HH24') STATE_DATE, COUNT(*) TOTAL_COUNT
                FROM {_storage.GetTableName("JOB_STATE")}
                WHERE NAME = :stateName
                  AND CREATED_AT >= :startDate
                GROUP BY TRUNC(CREATED_AT, 'HH24')",
-            new { stateName = type, startDate });
+            new { stateName = type, startDate },
+            commandTimeout: _storage.Options.CommandTimeout);
 
         foreach (var counter in counters)
         {
@@ -420,18 +452,20 @@ public class OracleMonitoringApi : IMonitoringApi
     private JobList<T> GetJobsOnQueue<T>(string queue, int from, int perPage, string stateName)
         where T : new()
     {
+        (from, perPage) = NormalizePage(from, perPage);
         using var connection = _storage.CreateAndOpenConnection();
 
         var jobs = connection.Query(
             $@"SELECT * FROM (
                  SELECT j.ID, j.INVOCATION_DATA, j.ARGUMENTS, j.CREATED_AT, j.EXPIRE_AT, j.STATE_NAME,
-                        ROW_NUMBER() OVER (ORDER BY jq.ID) AS ROWNUM
+                        jq.FETCHED_AT, ROW_NUMBER() OVER (ORDER BY jq.ID) AS RN
                  FROM {_storage.GetTableName("JOB_QUEUE")} jq
                  INNER JOIN {_storage.GetTableName("JOB")} j ON jq.JOB_ID = j.ID
                  WHERE jq.QUEUE = :queue
                )
-               WHERE ROWNUM > :from AND ROWNUM <= :to",
-            new { queue, from, to = from + perPage })
+               WHERE RN > :offsetRow AND RN <= :endRow",
+            new { queue, offsetRow = from, endRow = from + perPage },
+            commandTimeout: _storage.Options.CommandTimeout)
             .ToList();
 
         return new JobList<T>(jobs.Select(job =>
@@ -458,10 +492,21 @@ public class OracleMonitoringApi : IMonitoringApi
                     Job = deserializedJob,
                     State = job.STATE_NAME,
                     InEnqueuedState = string.Equals(job.STATE_NAME, stateName, StringComparison.OrdinalIgnoreCase),
-                    EnqueuedAt = job.CREATED_AT
+                    EnqueuedAt = job.CREATED_AT,
+                    InvocationData = invocationData
                 };
 
                 dto = enqueuedDto;
+            }
+            else if (typeof(T) == typeof(FetchedJobDto))
+            {
+                dto = new FetchedJobDto
+                {
+                    Job = deserializedJob,
+                    InvocationData = invocationData,
+                    State = job.STATE_NAME,
+                    FetchedAt = job.FETCHED_AT
+                };
             }
             else
             {
@@ -478,19 +523,21 @@ public class OracleMonitoringApi : IMonitoringApi
     private JobList<T> GetJobs<T>(int from, int count, string stateName,
         Func<Job, StateData, T> selector)
     {
+        (from, count) = NormalizePage(from, count);
         using var connection = _storage.CreateAndOpenConnection();
 
         var jobs = connection.Query(
             $@"SELECT * FROM (
                  SELECT j.ID, j.INVOCATION_DATA, j.ARGUMENTS, j.CREATED_AT, j.STATE_ID,
                         s.NAME, s.REASON, s.DATA,
-                        ROW_NUMBER() OVER (ORDER BY j.ID DESC) AS ROWNUM
+                        ROW_NUMBER() OVER (ORDER BY j.ID DESC) AS RN
                  FROM {_storage.GetTableName("JOB")} j
                  LEFT JOIN {_storage.GetTableName("JOB_STATE")} s ON j.STATE_ID = s.ID
                  WHERE j.STATE_NAME = :stateName
                )
-               WHERE ROWNUM > :from AND ROWNUM <= :to",
-            new { stateName, from, to = from + count })
+               WHERE RN > :offsetRow AND RN <= :endRow",
+            new { stateName, offsetRow = from, endRow = from + count },
+            commandTimeout: _storage.Options.CommandTimeout)
             .ToList();
 
         return new JobList<T>(jobs.Select(job =>
@@ -520,5 +567,19 @@ public class OracleMonitoringApi : IMonitoringApi
                 selector(deserializedJob!, stateData)
             );
         }).ToList());
+    }
+
+    private (int From, int Count) NormalizePage(int from, int count)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(from);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(count);
+        return (from, Math.Min(count, _storage.Options.DashboardJobListLimit));
+    }
+
+    private static DateTime? GetDateTime(IDictionary<string, string> data, string key)
+    {
+        return data.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+            ? JobHelper.DeserializeDateTime(value)
+            : null;
     }
 }

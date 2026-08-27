@@ -3,28 +3,16 @@ using Dapper;
 using Hangfire.Logging;
 using Hangfire.Storage;
 using Oracle.ManagedDataAccess.Client;
+using Oracle.ManagedDataAccess.Types;
 
 namespace Hangfire.Oracle.Core.Queue;
 
 /// <summary>
-/// Oracle-specific job queue implementation using database-level locking.
-/// Optimized for Oracle 19c and higher with <c>FOR UPDATE SKIP LOCKED</c> support.
+/// Fetches and enqueues jobs using a single ownership-aware Oracle implementation.
 /// </summary>
-/// <remarks>
-/// <para>
-/// This implementation uses Oracle 19c's <c>SKIP LOCKED</c> clause for non-blocking
-/// concurrent job dequeuing. Multiple workers can efficiently fetch jobs without
-/// blocking each other.
-/// </para>
-/// <para>
-/// For Oracle versions prior to 19c, set <see cref="OracleStorageOptions.UseSkipLocked"/>
-/// to <c>false</c> to use alternative locking mechanisms.
-/// </para>
-/// </remarks>
 internal sealed class OracleQueue : IJobQueue
 {
     private static readonly ILog _logger = LogProvider.GetLogger(typeof(OracleQueue));
-
     private readonly OracleStorage _storage;
     private readonly OracleStorageOptions _options;
 
@@ -34,275 +22,150 @@ internal sealed class OracleQueue : IJobQueue
         _options = options ?? throw new ArgumentNullException(nameof(options));
     }
 
-    /// <inheritdoc />
     public IFetchedJob? Dequeue(string[] queues, CancellationToken cancellationToken)
     {
-        if (queues == null || queues.Length == 0)
+        ArgumentNullException.ThrowIfNull(queues);
+        if (queues.Length == 0 || queues.Any(string.IsNullOrWhiteSpace))
         {
-            throw new ArgumentException("At least one queue name must be specified.", nameof(queues));
+            throw new ArgumentException("At least one non-empty queue name must be specified.", nameof(queues));
         }
 
-        var pollAttempts = 0;
-
-        while (!cancellationToken.IsCancellationRequested)
+        for (var attempt = 0; attempt < _options.FetchCount; attempt++)
         {
-            try
+            cancellationToken.ThrowIfCancellationRequested();
+            var fetchedJob = TryFetchJob(queues);
+            if (fetchedJob is not null)
             {
-                var fetchedJob = _options.UseSkipLocked
-                    ? TryFetchJobWithSkipLocked(queues)
-                    : TryFetchJobClassic(queues);
-
-                if (fetchedJob != null)
-                {
-                    _logger.TraceFormat("Dequeued job {0} from queue '{1}'.", fetchedJob.JobId, fetchedJob.Queue);
-                    return fetchedJob;
-                }
+                return fetchedJob;
             }
-            catch (OracleException ex) when (OracleErrorCodes.IsTransientError(ex.Number))
-            {
-                _logger.WarnFormat("Transient error during dequeue (ORA-{0}), retrying...", ex.Number);
-            }
-
-            // Increment poll attempts for exponential backoff on empty queues
-            pollAttempts++;
-
-            // Use exponential backoff up to the configured poll interval
-            var waitTime = pollAttempts <= 3
-                ? TimeSpan.FromMilliseconds(Math.Min(100 * Math.Pow(2, pollAttempts), _options.QueuePollInterval.TotalMilliseconds))
-                : _options.QueuePollInterval;
-
-            cancellationToken.WaitHandle.WaitOne(waitTime);
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
         return null;
     }
 
-    /// <summary>
-    /// Fetches a job using Oracle 19c+ SKIP LOCKED for non-blocking concurrent access.
-    /// </summary>
-    private FetchedJobContext? TryFetchJobWithSkipLocked(string[] queues)
+    public void Enqueue(IDbConnection connection, IDbTransaction? transaction, string queue, string jobId)
     {
-        var queueTableName = _storage.GetTableName("JOB_QUEUE");
-        var fetchToken = Guid.NewGuid().ToString("N");
-        var currentTime = GetCurrentTime();
-
-        using var connection = _storage.CreateAndOpenConnection();
-        using var transaction = connection.BeginTransaction();
-
-        try
+        ArgumentNullException.ThrowIfNull(connection);
+        if (string.IsNullOrWhiteSpace(queue))
         {
-            // Oracle 19c+: Use FETCH FIRST with FOR UPDATE SKIP LOCKED
-            // This is more efficient than ROWNUM for limiting with locks
-            var queueParams = BuildQueueParameters(queues);
-
-            var selectForUpdateSql = $@"
-                SELECT ID
-                FROM {queueTableName}
-                WHERE QUEUE IN ({queueParams.ParamList})
-                  AND (FETCHED_AT IS NULL OR FETCHED_AT < :invisibilityTimeout)
-                ORDER BY ID
-                FETCH FIRST 1 ROW ONLY
-                FOR UPDATE SKIP LOCKED";
-
-            var parameters = new DynamicParameters();
-            parameters.Add("invisibilityTimeout", currentTime.Add(-_options.InvisibilityTimeout));
-            foreach (var qp in queueParams.Parameters)
-            {
-                parameters.Add(qp.Key, qp.Value);
-            }
-
-            var lockedId = connection.QueryFirstOrDefault<long?>(
-                selectForUpdateSql,
-                parameters,
-                transaction,
-                commandTimeout: _options.CommandTimeout);
-
-            if (!lockedId.HasValue)
-            {
-                transaction.Rollback();
-                return null;
-            }
-
-            // Update the locked row
-            connection.Execute(
-                $@"UPDATE {queueTableName}
-                   SET FETCHED_AT = :fetchedAt, FETCH_TOKEN = :fetchToken
-                   WHERE ID = :id",
-                new { id = lockedId.Value, fetchedAt = currentTime, fetchToken },
-                transaction,
-                commandTimeout: _options.CommandTimeout);
-
-            // Retrieve job details
-            var jobData = connection.QueryFirst<QueuedJobRecord>(
-                $@"SELECT ID, JOB_ID, QUEUE FROM {queueTableName} WHERE ID = :id",
-                new { id = lockedId.Value },
-                transaction,
-                commandTimeout: _options.CommandTimeout);
-
-            transaction.Commit();
-
-            return new FetchedJobContext(
-                _storage,
-                jobData.Id,
-                jobData.JobId,
-                jobData.Queue,
-                fetchToken);
+            throw new ArgumentException("Queue names cannot be empty.", nameof(queue));
         }
-        catch
+
+        if (!long.TryParse(jobId, out var numericJobId))
         {
-            try
-            { transaction.Rollback(); }
-            catch { /* ignore */ }
-
-            throw;
+            throw new ArgumentException("Job identifiers must be numeric.", nameof(jobId));
         }
+
+        connection.Execute(
+            $@"INSERT INTO {_storage.GetTableName("JOB_QUEUE")} (ID, JOB_ID, QUEUE, FETCHED_AT, FETCH_TOKEN)
+               VALUES ({_storage.GetTableName("JOB_QUEUE_SEQ")}.NEXTVAL, :jobId, :queue, NULL, NULL)",
+            new { jobId = numericJobId, queue },
+            transaction,
+            _options.CommandTimeout);
     }
 
-    /// <summary>
-    /// Fetches a job using classic ROWNUM-based locking (Oracle 12c-18c compatible).
-    /// </summary>
-    private FetchedJobContext? TryFetchJobClassic(string[] queues)
+    internal string BuildFetchBlock(string[] queues)
     {
-        var queueTableName = _storage.GetTableName("JOB_QUEUE");
+        var queueParameters = string.Join(", ", queues.Select((_, index) => $":queue{index}"));
+        var lockClause = _options.SupportsSkipLocked ? "FOR UPDATE SKIP LOCKED" : "FOR UPDATE NOWAIT";
+        return $@"DECLARE
+  CURSOR next_job IS
+    SELECT ID, JOB_ID, QUEUE
+    FROM {_storage.GetTableName("JOB_QUEUE")}
+    WHERE QUEUE IN ({queueParameters})
+      AND (FETCHED_AT IS NULL OR FETCHED_AT < :staleAt)
+    ORDER BY ID
+    {lockClause};
+BEGIN
+  :found := 0;
+  OPEN next_job;
+  FETCH next_job INTO :queueId, :jobId, :queueName;
+  IF next_job%FOUND THEN
+    UPDATE {_storage.GetTableName("JOB_QUEUE")}
+    SET FETCHED_AT = :fetchedAt, FETCH_TOKEN = :fetchToken
+    WHERE CURRENT OF next_job;
+    :found := 1;
+  END IF;
+  CLOSE next_job;
+END;";
+    }
+
+    private FetchedJobContext? TryFetchJob(string[] queues)
+    {
         var fetchToken = Guid.NewGuid().ToString("N");
-        var currentTime = GetCurrentTime();
+        var now = _storage.GetUtcOrLocalNow();
 
         using var connection = _storage.CreateAndOpenConnection();
-        using var transaction = connection.BeginTransaction();
+        using var transaction = connection.BeginTransaction(_options.TransactionIsolationLevel);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.BindByName = true;
+        command.CommandTimeout = _options.CommandTimeout;
+        command.CommandText = BuildFetchBlock(queues);
+
+        for (var index = 0; index < queues.Length; index++)
+        {
+            command.Parameters.Add($"queue{index}", OracleDbType.NVarchar2, queues[index], ParameterDirection.Input);
+        }
+
+        command.Parameters.Add("staleAt", OracleDbType.TimeStamp, now.Subtract(_options.InvisibilityTimeout), ParameterDirection.Input);
+        command.Parameters.Add("found", OracleDbType.Int32, ParameterDirection.Output);
+        command.Parameters.Add("queueId", OracleDbType.Int64, ParameterDirection.Output);
+        command.Parameters.Add("jobId", OracleDbType.Int64, ParameterDirection.Output);
+        command.Parameters.Add("queueName", OracleDbType.NVarchar2, 50, null, ParameterDirection.Output);
+        command.Parameters.Add("fetchedAt", OracleDbType.TimeStamp, now, ParameterDirection.Input);
+        command.Parameters.Add("fetchToken", OracleDbType.NVarchar2, fetchToken, ParameterDirection.Input);
 
         try
         {
-            var queueParams = BuildQueueParameters(queues);
-
-            // Classic approach: subquery with ROWNUM, then FOR UPDATE
-            var updateSql = $@"
-                UPDATE {queueTableName}
-                SET FETCHED_AT = :fetchedAt, FETCH_TOKEN = :fetchToken
-                WHERE ID = (
-                    SELECT ID FROM (
-                        SELECT ID FROM {queueTableName}
-                        WHERE QUEUE IN ({queueParams.ParamList})
-                          AND (FETCHED_AT IS NULL OR FETCHED_AT < :invisibilityTimeout)
-                        ORDER BY ID
-                    ) WHERE ROWNUM = 1
-                    FOR UPDATE NOWAIT
-                )";
-
-            var parameters = new DynamicParameters();
-            parameters.Add("fetchedAt", currentTime);
-            parameters.Add("fetchToken", fetchToken);
-            parameters.Add("invisibilityTimeout", currentTime.Add(-_options.InvisibilityTimeout));
-            foreach (var qp in queueParams.Parameters)
-            {
-                parameters.Add(qp.Key, qp.Value);
-            }
-
-            int updated;
-            try
-            {
-                updated = connection.Execute(updateSql, parameters, transaction, _options.CommandTimeout);
-            }
-            catch (OracleException ex) when (OracleErrorCodes.IsResourceBusy(ex))
-            {
-                // Row is locked by another session, skip
-                transaction.Rollback();
-                return null;
-            }
-
-            if (updated == 0)
+            command.ExecuteNonQuery();
+            if (ConvertOracleInt64(command.Parameters["found"].Value) == 0)
             {
                 transaction.Rollback();
                 return null;
             }
 
-            var jobData = connection.QueryFirst<QueuedJobRecord>(
-                $@"SELECT ID, JOB_ID, QUEUE FROM {queueTableName} WHERE FETCH_TOKEN = :fetchToken",
-                new { fetchToken },
-                transaction,
-                commandTimeout: _options.CommandTimeout);
-
+            var queueId = ConvertOracleInt64(command.Parameters["queueId"].Value);
+            var jobId = ConvertOracleInt64(command.Parameters["jobId"].Value);
+            var queueName = command.Parameters["queueName"].Value.ToString()
+                ?? throw new InvalidOperationException("Oracle returned an empty queue name.");
             transaction.Commit();
 
-            return new FetchedJobContext(
-                _storage,
-                jobData.Id,
-                jobData.JobId,
-                jobData.Queue,
-                fetchToken);
+            _logger.TraceFormat("Dequeued job {0} from queue '{1}'.", jobId, queueName);
+            return new FetchedJobContext(_storage, queueId, jobId, queueName, fetchToken);
         }
-        catch (OracleException ex) when (OracleErrorCodes.IsResourceBusy(ex))
+        catch (OracleException ex) when (!_options.SupportsSkipLocked && OracleErrorCodes.IsResourceBusy(ex))
         {
-            try
-            { transaction.Rollback(); }
-            catch { /* ignore */ }
-
+            TryRollback(transaction);
             return null;
         }
         catch
         {
-            try
-            { transaction.Rollback(); }
-            catch { /* ignore */ }
-
+            TryRollback(transaction);
             throw;
         }
     }
 
-    /// <inheritdoc />
-    public void Enqueue(IDbConnection connection, IDbTransaction? transaction, string queue, string jobId)
+    private static void TryRollback(IDbTransaction transaction)
     {
-        if (string.IsNullOrEmpty(queue))
+        try
         {
-            throw new ArgumentNullException(nameof(queue));
+            transaction.Rollback();
         }
-
-        if (string.IsNullOrEmpty(jobId))
+        catch (InvalidOperationException)
         {
-            throw new ArgumentNullException(nameof(jobId));
+            // The transaction is already completed or the connection was lost.
         }
-
-        var queueTableName = _storage.GetTableName("JOB_QUEUE");
-
-        // Use sequence for ID if configured, otherwise rely on trigger
-        var insertSql = $@"
-            INSERT INTO {queueTableName} (ID, JOB_ID, QUEUE, FETCHED_AT)
-            VALUES ({_storage.GetTableName("JOB_QUEUE_SEQ")}.NEXTVAL, :jobId, :queue, NULL)";
-
-        connection.Execute(
-            insertSql,
-            new { jobId = long.Parse(jobId), queue },
-            transaction,
-            commandTimeout: _options.CommandTimeout);
-
-        _logger.TraceFormat("Enqueued job {0} to queue '{1}'.", jobId, queue);
+        catch (OracleException)
+        {
+            // Preserve the exception that caused the rollback.
+        }
     }
 
-    private DateTime GetCurrentTime() =>
-        _options.UseUtcTime ? DateTime.UtcNow : DateTime.Now;
-
-    private static (string ParamList, Dictionary<string, string> Parameters) BuildQueueParameters(string[] queues)
+    private static long ConvertOracleInt64(object value)
     {
-        var parameters = new Dictionary<string, string>();
-        var paramNames = new string[queues.Length];
-
-        for (var i = 0; i < queues.Length; i++)
-        {
-            var paramName = $"q{i}";
-            paramNames[i] = $":{paramName}";
-            parameters[paramName] = queues[i];
-        }
-
-        return (string.Join(", ", paramNames), parameters);
-    }
-
-    /// <summary>
-    /// Internal record for mapping queue table results.
-    /// </summary>
-    private sealed record QueuedJobRecord
-    {
-        public long Id { get; init; }
-        public long JobId { get; init; }
-        public string Queue { get; init; } = string.Empty;
+        return value is OracleDecimal oracleDecimal
+            ? decimal.ToInt64(oracleDecimal.Value)
+            : Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
     }
 }

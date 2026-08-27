@@ -64,8 +64,9 @@ public class OracleStorage : JobStorage, IDisposable
             throw new ArgumentNullException(nameof(connectionString));
         }
 
-        _connectionString = EnhanceConnectionString(connectionString, options);
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _options.Validate();
+        _connectionString = EnhanceConnectionString(connectionString, _options);
 
         // Limit concurrent connection creation during bursts
         _connectionSemaphore = new SemaphoreSlim(50, 50);
@@ -190,7 +191,7 @@ public class OracleStorage : JobStorage, IDisposable
             if (!string.IsNullOrWhiteSpace(_options.SchemaName))
             {
                 using var command = connection.CreateCommand();
-                command.CommandText = $"ALTER SESSION SET CURRENT_SCHEMA = {_options.SchemaName}";
+                command.CommandText = $"ALTER SESSION SET CURRENT_SCHEMA = {OracleIdentifier.Validate(_options.SchemaName, nameof(_options.SchemaName))}";
                 command.CommandTimeout = _options.CommandTimeout;
                 command.ExecuteNonQuery();
             }
@@ -222,7 +223,7 @@ public class OracleStorage : JobStorage, IDisposable
             if (!string.IsNullOrWhiteSpace(_options.SchemaName))
             {
                 await connection.ExecuteAsync(
-                    $"ALTER SESSION SET CURRENT_SCHEMA = {_options.SchemaName}",
+                    $"ALTER SESSION SET CURRENT_SCHEMA = {OracleIdentifier.Validate(_options.SchemaName, nameof(_options.SchemaName))}",
                     commandTimeout: _options.CommandTimeout).ConfigureAwait(false);
             }
 
@@ -262,7 +263,7 @@ public class OracleStorage : JobStorage, IDisposable
         }
         catch
         {
-            transaction.Rollback();
+            TryRollback(transaction);
             throw;
         }
     }
@@ -286,12 +287,15 @@ public class OracleStorage : JobStorage, IDisposable
     /// </summary>
     internal string GetTableName(string tableName)
     {
-        var prefix = _options.TablePrefix ?? "HF_";
-        var fullTableName = $"{prefix}{tableName}";
+        var prefix = OracleIdentifier.ValidatePrefix(_options.TablePrefix, nameof(_options.TablePrefix));
+        var objectName = OracleIdentifier.Validate(tableName, nameof(tableName));
+        var fullTableName = $"{prefix}{objectName}";
+
+        _ = OracleIdentifier.Validate(fullTableName, nameof(tableName));
 
         if (!string.IsNullOrWhiteSpace(_options.SchemaName))
         {
-            return $"{_options.SchemaName}.{fullTableName}";
+            return $"{OracleIdentifier.Validate(_options.SchemaName, nameof(_options.SchemaName))}.{fullTableName}";
         }
 
         return fullTableName;
@@ -333,7 +337,7 @@ public class OracleStorage : JobStorage, IDisposable
             }
             catch
             {
-                transaction.Rollback();
+                TryRollback(transaction);
                 throw;
             }
         }
@@ -369,7 +373,42 @@ public class OracleStorage : JobStorage, IDisposable
     private void InitializeSchema()
     {
         using var connection = CreateAndOpenConnection();
-        OracleSchemaManager.EnsureSchemaCreated(connection, _options.TablePrefix, _options.SchemaName);
+        OracleSchemaManager.EnsureSchemaCreated(
+            connection,
+            _options.TablePrefix,
+            _options.SchemaName,
+            _options.CommandTimeout);
+    }
+
+    internal DateTime GetUtcOrLocalNow() => _options.UseUtcTime ? DateTime.UtcNow : DateTime.Now;
+
+    internal int TransactionCommandTimeout
+    {
+        get
+        {
+            var transactionSeconds = (int)Math.Min(
+                int.MaxValue,
+                Math.Max(1, Math.Ceiling(_options.TransactionTimeout.TotalSeconds)));
+            return _options.CommandTimeout == 0
+                ? transactionSeconds
+                : Math.Min(_options.CommandTimeout, transactionSeconds);
+        }
+    }
+
+    private static void TryRollback(IDbTransaction transaction)
+    {
+        try
+        {
+            transaction.Rollback();
+        }
+        catch (InvalidOperationException)
+        {
+            // Preserve the exception that caused the rollback.
+        }
+        catch (OracleException)
+        {
+            // Preserve the exception that caused the rollback.
+        }
     }
 
     private string BuildDisplayName()

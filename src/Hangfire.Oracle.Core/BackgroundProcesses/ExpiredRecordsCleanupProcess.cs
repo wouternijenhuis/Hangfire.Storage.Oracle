@@ -48,6 +48,7 @@ internal sealed class ExpiredRecordsCleanupProcess : IServerComponent
             
             // Independent tables with their own EXPIRE_AT
             new("AGGREGATED_COUNTER", hasOwnExpiration: true),
+            new("COUNTER", hasOwnExpiration: true),
             new("LIST", hasOwnExpiration: true),
             new("SET", hasOwnExpiration: true),
             new("HASH", hasOwnExpiration: true),
@@ -64,7 +65,7 @@ internal sealed class ExpiredRecordsCleanupProcess : IServerComponent
     {
         _logger.Debug("Starting expired records cleanup...");
 
-        var currentTime = DateTime.UtcNow;
+        var currentTime = _storage.GetUtcOrLocalNow();
         var totalDeleted = 0;
 
         // Acquire distributed lock to prevent concurrent cleanup
@@ -161,7 +162,10 @@ internal sealed class ExpiredRecordsCleanupProcess : IServerComponent
                       AND ROWNUM <= :batchSize";
             }
 
-            return connection.Execute(deleteSql, new { expireAt, batchSize = _batchSize });
+            return connection.Execute(
+                deleteSql,
+                new { expireAt, batchSize = _batchSize },
+                commandTimeout: _storage.Options.CommandTimeout);
         }
         catch (Exception ex)
         {

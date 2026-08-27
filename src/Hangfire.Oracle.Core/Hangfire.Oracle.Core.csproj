@@ -15,23 +15,34 @@
     <Title>Hangfire Oracle Storage Provider</Title>
     <Description>Hangfire storage provider implementation for Oracle Database using Oracle.ManagedDataAccess.Core and Dapper. Provides reliable job persistence with background processes for maintenance.</Description>
     <PackageTags>hangfire;oracle;storage;background-jobs;job-scheduling;dapper;distributed-lock;devdad</PackageTags>
+    <PackageValidationBaselineVersion>1.0.3</PackageValidationBaselineVersion>
+    <EnablePackageValidation>true</EnablePackageValidation>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\CHANGELOG.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\UPGRADE.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <!-- Production dependencies (versions from Directory.Packages.props) -->
   <ItemGroup>
     <PackageReference Include="Dapper" />
-    <PackageReference Include="Dapper.Oracle" />
     <PackageReference Include="Hangfire.Core" />
     <PackageReference Include="Oracle.ManagedDataAccess.Core" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Scripts\Install.sql" />
     <EmbeddedResource Include="Scripts\Uninstall.sql" />
+    <None Include="Scripts\Install.sql" Pack="true" PackagePath="contentFiles/any/any/Sql/" />
+    <None Include="Scripts\Uninstall.sql" Pack="true" PackagePath="contentFiles/any/any/Sql/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Hangfire.Oracle.Core.Tests" />
   </ItemGroup>
 
 </Project>

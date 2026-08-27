@@ -315,6 +315,16 @@ dotnet_diagnostic.CA1848.severity = suggestion
 # CA2007: Consider calling ConfigureAwait on awaited task
 dotnet_diagnostic.CA2007.severity = warning
 
+# Public compatibility and non-functional modernization rules
+dotnet_diagnostic.CA1041.severity = none
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA1305.severity = none
+dotnet_diagnostic.CA1510.severity = none
+dotnet_diagnostic.CA1512.severity = none
+dotnet_diagnostic.CA1711.severity = none
+dotnet_diagnostic.CA1822.severity = none
+dotnet_diagnostic.CA1859.severity = none
+
 # IDE0005: Using directive is unnecessary
 dotnet_diagnostic.IDE0005.severity = warning
 

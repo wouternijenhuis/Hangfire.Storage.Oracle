@@ -26,7 +26,7 @@ internal sealed class OracleQueueMonitor : IQueueMonitor
             FROM {queueTableName}
             ORDER BY QUEUE";
 
-        return connection.Query<string>(sql).ToList();
+        return connection.Query<string>(sql, commandTimeout: _storage.Options.CommandTimeout).ToList();
     }
 
     /// <inheritdoc />
@@ -47,7 +47,10 @@ internal sealed class OracleQueueMonitor : IQueueMonitor
             FROM {queueTableName}
             WHERE QUEUE = :queue";
 
-        var result = connection.QueryFirstOrDefault<dynamic>(sql, new { queue });
+        var result = connection.QueryFirstOrDefault<dynamic>(
+            sql,
+            new { queue },
+            commandTimeout: _storage.Options.CommandTimeout);
 
         return new QueueStatistics(
             Convert.ToInt32(result?.ENQUEUEDCOUNT ?? 0),
@@ -73,7 +76,10 @@ internal sealed class OracleQueueMonitor : IQueueMonitor
             ORDER BY ID
             OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY";
 
-        return connection.Query<long>(sql, new { queue, offset, limit }).ToList();
+        return connection.Query<long>(
+            sql,
+            new { queue, offset, limit },
+            commandTimeout: _storage.Options.CommandTimeout).ToList();
     }
 
     /// <inheritdoc />
@@ -94,6 +100,9 @@ internal sealed class OracleQueueMonitor : IQueueMonitor
             ORDER BY FETCHED_AT
             OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY";
 
-        return connection.Query<long>(sql, new { queue, offset, limit }).ToList();
+        return connection.Query<long>(
+            sql,
+            new { queue, offset, limit },
+            commandTimeout: _storage.Options.CommandTimeout).ToList();
     }
 }

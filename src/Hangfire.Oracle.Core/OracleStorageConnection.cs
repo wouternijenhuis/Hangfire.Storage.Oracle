@@ -1,3 +1,4 @@
+using System.Data;
 using Dapper;
 using Hangfire.Common;
 using Hangfire.Server;
@@ -38,9 +39,9 @@ public class OracleStorageConnection : JobStorageConnection
             throw new ArgumentNullException(nameof(queues));
         }
 
-        var providers = queues.Select(queue => new OracleJobQueue(_storage, queue)).ToArray();
-
-        var fetchedJob = default(IFetchedJob);
+        var queue = _storage.QueueProviders.DefaultProvider.GetQueue();
+        IFetchedJob? fetchedJob = null;
+        var retryAttempt = 0;
 
         // This is an intentional infinite loop that continuously polls for jobs
         // It only exits when:
@@ -51,13 +52,18 @@ public class OracleStorageConnection : JobStorageConnection
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            foreach (var provider in providers)
+            try
             {
-                fetchedJob = provider.Dequeue(cancellationToken);
-                if (fetchedJob != null)
-                {
-                    break;
-                }
+                fetchedJob = queue.Dequeue(queues, cancellationToken);
+                retryAttempt = 0;
+            }
+            catch (global::Oracle.ManagedDataAccess.Client.OracleException ex)
+                when (OracleErrorCodes.IsTransientError(ex.Number) && retryAttempt < _storage.Options.MaxRetryAttempts)
+            {
+                retryAttempt++;
+                var retryDelay = TimeSpan.FromMilliseconds(
+                    _storage.Options.RetryDelay.TotalMilliseconds * Math.Pow(2, retryAttempt - 1));
+                cancellationToken.WaitHandle.WaitOne(retryDelay);
             }
 
             if (fetchedJob == null)
@@ -80,39 +86,50 @@ public class OracleStorageConnection : JobStorageConnection
         var invocationData = InvocationData.SerializeJob(job);
 
         using var connection = _storage.CreateAndOpenConnection();
-        using var transaction = connection.BeginTransaction();
+        using var transaction = connection.BeginTransaction(_storage.Options.TransactionIsolationLevel);
 
         // Insert the job and get the ID using a SELECT after insert
-        connection.Execute(
-            $@"INSERT INTO {_storage.GetTableName("JOB")} (ID, INVOCATION_DATA, ARGUMENTS, CREATED_AT, EXPIRE_AT)
-               VALUES ({_storage.GetTableName("JOB_SEQ")}.NEXTVAL, :invocationData, :arguments, :createdAt, :expireAt)",
-            new
-            {
-                invocationData = SerializationHelper.Serialize(invocationData, SerializationOption.User),
-                arguments = invocationData.Arguments,
-                createdAt,
-                expireAt = createdAt.Add(expireIn)
-            },
-            transaction: transaction);
-
-        var jobId = connection.ExecuteScalar<long>(
-            $@"SELECT {_storage.GetTableName("JOB_SEQ")}.CURRVAL FROM DUAL",
-            transaction: transaction);
-
-        if (parameters != null)
+        try
         {
-            foreach (var parameter in parameters)
-            {
-                connection.Execute(
-                    $@"INSERT INTO {_storage.GetTableName("JOB_PARAMETER")} (ID, JOB_ID, NAME, VALUE)
-                       VALUES ({_storage.GetTableName("JOB_PARAMETER_SEQ")}.NEXTVAL, :jobId, :name, :value)",
-                    new { jobId, name = parameter.Key, value = parameter.Value },
-                    transaction: transaction);
-            }
-        }
+            connection.Execute(
+                $@"INSERT INTO {_storage.GetTableName("JOB")} (ID, INVOCATION_DATA, ARGUMENTS, CREATED_AT, EXPIRE_AT)
+               VALUES ({_storage.GetTableName("JOB_SEQ")}.NEXTVAL, :invocationData, :arguments, :createdAt, :expireAt)",
+                new
+                {
+                    invocationData = SerializationHelper.Serialize(invocationData, SerializationOption.User),
+                    arguments = invocationData.Arguments,
+                    createdAt,
+                    expireAt = createdAt.Add(expireIn)
+                },
+                transaction: transaction,
+                commandTimeout: _storage.TransactionCommandTimeout);
 
-        transaction.Commit();
-        return jobId.ToString();
+            var jobId = connection.ExecuteScalar<long>(
+                $@"SELECT {_storage.GetTableName("JOB_SEQ")}.CURRVAL FROM DUAL",
+                transaction: transaction,
+                commandTimeout: _storage.TransactionCommandTimeout);
+
+            if (parameters != null)
+            {
+                foreach (var parameter in parameters)
+                {
+                    connection.Execute(
+                        $@"INSERT INTO {_storage.GetTableName("JOB_PARAMETER")} (ID, JOB_ID, NAME, VALUE)
+                       VALUES ({_storage.GetTableName("JOB_PARAMETER_SEQ")}.NEXTVAL, :jobId, :name, :value)",
+                        new { jobId, name = parameter.Key, value = parameter.Value },
+                        transaction: transaction,
+                        commandTimeout: _storage.TransactionCommandTimeout);
+                }
+            }
+
+            transaction.Commit();
+            return jobId.ToString();
+        }
+        catch
+        {
+            TryRollback(transaction);
+            throw;
+        }
     }
 
     /// <inheritdoc/>
@@ -129,7 +146,8 @@ public class OracleStorageConnection : JobStorageConnection
             $@"SELECT INVOCATION_DATA, ARGUMENTS, STATE_NAME, CREATED_AT, EXPIRE_AT
                FROM {_storage.GetTableName("JOB")}
                WHERE ID = :id",
-            new { id = long.Parse(jobId) })
+            new { id = long.Parse(jobId) },
+            commandTimeout: _storage.Options.CommandTimeout)
             .SingleOrDefault();
 
         if (jobData == null)
@@ -181,7 +199,8 @@ public class OracleStorageConnection : JobStorageConnection
                FROM {_storage.GetTableName("JOB_STATE")} s
                INNER JOIN {_storage.GetTableName("JOB")} j ON j.STATE_ID = s.ID
                WHERE j.ID = :id",
-            new { id = long.Parse(jobId) })
+            new { id = long.Parse(jobId) },
+            commandTimeout: _storage.Options.CommandTimeout)
             .SingleOrDefault();
 
         if (stateData == null)
@@ -219,7 +238,8 @@ public class OracleStorageConnection : JobStorageConnection
                WHEN MATCHED THEN UPDATE SET jp.VALUE = :value
                WHEN NOT MATCHED THEN INSERT (ID, JOB_ID, NAME, VALUE)
                  VALUES ({_storage.GetTableName("JOB_PARAMETER_SEQ")}.NEXTVAL, :jobId, :name, :value)",
-            new { jobId = long.Parse(id), name, value });
+            new { jobId = long.Parse(id), name, value },
+            commandTimeout: _storage.Options.CommandTimeout);
     }
 
     /// <inheritdoc/>
@@ -240,7 +260,8 @@ public class OracleStorageConnection : JobStorageConnection
         return connection.ExecuteScalar<string?>(
             $@"SELECT VALUE FROM {_storage.GetTableName("JOB_PARAMETER")}
                WHERE JOB_ID = :jobId AND NAME = :name",
-            new { jobId = long.Parse(id), name });
+            new { jobId = long.Parse(id), name },
+            commandTimeout: _storage.Options.CommandTimeout);
     }
 
     /// <inheritdoc/>
@@ -256,7 +277,8 @@ public class OracleStorageConnection : JobStorageConnection
         var result = connection.Query<string>(
             $@"SELECT VALUE FROM {_storage.GetTableName("SET")}
                WHERE KEY_NAME = :key",
-            new { key });
+            new { key },
+            commandTimeout: _storage.Options.CommandTimeout);
 
         return new HashSet<string>(result);
     }
@@ -277,7 +299,8 @@ public class OracleStorageConnection : JobStorageConnection
                  WHERE KEY_NAME = :key AND SCORE BETWEEN :from AND :to
                  ORDER BY SCORE
                ) WHERE ROWNUM = 1",
-            new { key, from = fromScore, to = toScore })
+            new { key, from = fromScore, to = toScore },
+            commandTimeout: _storage.Options.CommandTimeout)
             .SingleOrDefault();
     }
 
@@ -292,9 +315,13 @@ public class OracleStorageConnection : JobStorageConnection
         using var connection = _storage.CreateAndOpenConnection();
 
         var result = connection.ExecuteScalar<long?>(
-            $@"SELECT SUM(VALUE) FROM {_storage.GetTableName("COUNTER")}
-               WHERE KEY_NAME = :key",
-            new { key });
+            $@"SELECT SUM(VALUE) FROM (
+                 SELECT VALUE FROM {_storage.GetTableName("COUNTER")} WHERE KEY_NAME = :key
+                 UNION ALL
+                 SELECT VALUE FROM {_storage.GetTableName("AGGREGATED_COUNTER")} WHERE KEY_NAME = :key
+               )",
+            new { key },
+            commandTimeout: _storage.Options.CommandTimeout);
 
         return result ?? 0;
     }
@@ -312,7 +339,8 @@ public class OracleStorageConnection : JobStorageConnection
         return connection.ExecuteScalar<long>(
             $@"SELECT COUNT(*) FROM {_storage.GetTableName("SET")}
                WHERE KEY_NAME = :key",
-            new { key });
+            new { key },
+            commandTimeout: _storage.Options.CommandTimeout);
     }
 
     /// <inheritdoc/>
@@ -327,12 +355,13 @@ public class OracleStorageConnection : JobStorageConnection
 
         var result = connection.Query<string>(
             $@"SELECT VALUE FROM (
-                 SELECT VALUE, ROW_NUMBER() OVER (ORDER BY ID) AS ROWNUM
+                 SELECT VALUE, ROW_NUMBER() OVER (ORDER BY ID) AS RN
                  FROM {_storage.GetTableName("SET")}
                  WHERE KEY_NAME = :key
                )
-               WHERE ROWNUM > :start AND ROWNUM <= :end",
-            new { key, start = startingFrom, end = endingAt + 1 });
+               WHERE RN > :startRow AND RN <= :endRow",
+            new { key, startRow = startingFrom, endRow = endingAt + 1 },
+            commandTimeout: _storage.Options.CommandTimeout);
 
         return result.ToList();
     }
@@ -350,14 +379,15 @@ public class OracleStorageConnection : JobStorageConnection
         var result = connection.ExecuteScalar<DateTime?>(
             $@"SELECT MIN(EXPIRE_AT) FROM {_storage.GetTableName("SET")}
                WHERE KEY_NAME = :key",
-            new { key });
+            new { key },
+            commandTimeout: _storage.Options.CommandTimeout);
 
         if (!result.HasValue)
         {
             return TimeSpan.FromSeconds(-1);
         }
 
-        return result.Value - DateTime.UtcNow;
+        return result.Value - _storage.GetUtcOrLocalNow();
     }
 
     /// <inheritdoc/>
@@ -373,7 +403,8 @@ public class OracleStorageConnection : JobStorageConnection
         return connection.ExecuteScalar<long>(
             $@"SELECT COUNT(*) FROM {_storage.GetTableName("HASH")}
                WHERE KEY_NAME = :key",
-            new { key });
+            new { key },
+            commandTimeout: _storage.Options.CommandTimeout);
     }
 
     /// <inheritdoc/>
@@ -389,14 +420,15 @@ public class OracleStorageConnection : JobStorageConnection
         var result = connection.ExecuteScalar<DateTime?>(
             $@"SELECT MIN(EXPIRE_AT) FROM {_storage.GetTableName("HASH")}
                WHERE KEY_NAME = :key",
-            new { key });
+            new { key },
+            commandTimeout: _storage.Options.CommandTimeout);
 
         if (!result.HasValue)
         {
             return TimeSpan.FromSeconds(-1);
         }
 
-        return result.Value - DateTime.UtcNow;
+        return result.Value - _storage.GetUtcOrLocalNow();
     }
 
     /// <inheritdoc/>
@@ -417,7 +449,8 @@ public class OracleStorageConnection : JobStorageConnection
         return connection.ExecuteScalar<string?>(
             $@"SELECT VALUE FROM {_storage.GetTableName("HASH")}
                WHERE KEY_NAME = :key AND FIELD = :field",
-            new { key, field = name });
+            new { key, field = name },
+            commandTimeout: _storage.Options.CommandTimeout);
     }
 
     /// <inheritdoc/>
@@ -433,7 +466,8 @@ public class OracleStorageConnection : JobStorageConnection
         return connection.ExecuteScalar<long>(
             $@"SELECT COUNT(*) FROM {_storage.GetTableName("LIST")}
                WHERE KEY_NAME = :key",
-            new { key });
+            new { key },
+            commandTimeout: _storage.Options.CommandTimeout);
     }
 
     /// <inheritdoc/>
@@ -449,14 +483,15 @@ public class OracleStorageConnection : JobStorageConnection
         var result = connection.ExecuteScalar<DateTime?>(
             $@"SELECT MIN(EXPIRE_AT) FROM {_storage.GetTableName("LIST")}
                WHERE KEY_NAME = :key",
-            new { key });
+            new { key },
+            commandTimeout: _storage.Options.CommandTimeout);
 
         if (!result.HasValue)
         {
             return TimeSpan.FromSeconds(-1);
         }
 
-        return result.Value - DateTime.UtcNow;
+        return result.Value - _storage.GetUtcOrLocalNow();
     }
 
     /// <inheritdoc/>
@@ -471,12 +506,13 @@ public class OracleStorageConnection : JobStorageConnection
 
         var result = connection.Query<string>(
             $@"SELECT VALUE FROM (
-                 SELECT VALUE, ROW_NUMBER() OVER (ORDER BY ID) AS ROWNUM
+                 SELECT VALUE, ROW_NUMBER() OVER (ORDER BY ID) AS RN
                  FROM {_storage.GetTableName("LIST")}
                  WHERE KEY_NAME = :key
                )
-               WHERE ROWNUM > :start AND ROWNUM <= :end",
-            new { key, start = startingFrom, end = endingAt + 1 });
+               WHERE RN > :startRow AND RN <= :endRow",
+            new { key, startRow = startingFrom, endRow = endingAt + 1 },
+            commandTimeout: _storage.Options.CommandTimeout);
 
         return result.ToList();
     }
@@ -495,7 +531,8 @@ public class OracleStorageConnection : JobStorageConnection
             $@"SELECT VALUE FROM {_storage.GetTableName("LIST")}
                WHERE KEY_NAME = :key
                ORDER BY ID",
-            new { key });
+            new { key },
+            commandTimeout: _storage.Options.CommandTimeout);
 
         return result.ToList();
     }
@@ -513,7 +550,8 @@ public class OracleStorageConnection : JobStorageConnection
         var result = connection.Query(
             $@"SELECT FIELD, VALUE FROM {_storage.GetTableName("HASH")}
                WHERE KEY_NAME = :key",
-            new { key })
+            new { key },
+            commandTimeout: _storage.Options.CommandTimeout)
             .ToDictionary(
                 x => (string)x.FIELD,
                 x => (string)x.VALUE);
@@ -535,7 +573,7 @@ public class OracleStorageConnection : JobStorageConnection
         }
 
         using var connection = _storage.CreateAndOpenConnection();
-        using var transaction = connection.BeginTransaction();
+        using var transaction = connection.BeginTransaction(_storage.Options.TransactionIsolationLevel);
 
         try
         {
@@ -549,14 +587,15 @@ public class OracleStorageConnection : JobStorageConnection
                        WHEN NOT MATCHED THEN INSERT (ID, KEY_NAME, FIELD, VALUE, EXPIRE_AT)
                          VALUES ({_storage.GetTableName("HASH_SEQ")}.NEXTVAL, :key, :field, :value, NULL)",
                     new { key, field = pair.Key, value = pair.Value },
-                    transaction: transaction);
+                    transaction: transaction,
+                    commandTimeout: _storage.TransactionCommandTimeout);
             }
 
             transaction.Commit();
         }
         catch
         {
-            transaction.Rollback();
+            TryRollback(transaction);
             throw;
         }
     }
@@ -580,7 +619,7 @@ public class OracleStorageConnection : JobStorageConnection
         {
             context.WorkerCount,
             context.Queues,
-            StartedAt = DateTime.UtcNow
+            StartedAt = _storage.GetUtcOrLocalNow()
         }, SerializationOption.User);
 
         connection.Execute(
@@ -590,7 +629,8 @@ public class OracleStorageConnection : JobStorageConnection
                WHEN MATCHED THEN UPDATE SET s.DATA = :data, s.LAST_HEARTBEAT = :now
                WHEN NOT MATCHED THEN INSERT (ID, DATA, LAST_HEARTBEAT)
                  VALUES (:id, :data, :now)",
-            new { id = serverId, data, now = DateTime.UtcNow });
+            new { id = serverId, data, now = _storage.GetUtcOrLocalNow() },
+            commandTimeout: _storage.Options.CommandTimeout);
     }
 
     /// <inheritdoc/>
@@ -606,7 +646,8 @@ public class OracleStorageConnection : JobStorageConnection
         connection.Execute(
             $@"DELETE FROM {_storage.GetTableName("SERVER")}
                WHERE ID = :id",
-            new { id = serverId });
+            new { id = serverId },
+            commandTimeout: _storage.Options.CommandTimeout);
     }
 
     /// <inheritdoc/>
@@ -623,7 +664,8 @@ public class OracleStorageConnection : JobStorageConnection
             $@"UPDATE {_storage.GetTableName("SERVER")}
                SET LAST_HEARTBEAT = :now
                WHERE ID = :id",
-            new { id = serverId, now = DateTime.UtcNow });
+            new { id = serverId, now = _storage.GetUtcOrLocalNow() },
+            commandTimeout: _storage.Options.CommandTimeout);
     }
 
     /// <inheritdoc/>
@@ -639,6 +681,23 @@ public class OracleStorageConnection : JobStorageConnection
         return connection.Execute(
             $@"DELETE FROM {_storage.GetTableName("SERVER")}
                WHERE LAST_HEARTBEAT < :timeOutAt",
-            new { timeOutAt = DateTime.UtcNow.Add(timeOut.Negate()) });
+            new { timeOutAt = _storage.GetUtcOrLocalNow().Add(timeOut.Negate()) },
+            commandTimeout: _storage.Options.CommandTimeout);
+    }
+
+    private static void TryRollback(IDbTransaction transaction)
+    {
+        try
+        {
+            transaction.Rollback();
+        }
+        catch (InvalidOperationException)
+        {
+            // Preserve the exception that caused the rollback.
+        }
+        catch (global::Oracle.ManagedDataAccess.Client.OracleException)
+        {
+            // Preserve the exception that caused the rollback.
+        }
     }
 }

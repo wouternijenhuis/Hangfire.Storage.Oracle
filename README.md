@@ -1,224 +1,119 @@
 # DevDad.Hangfire.Oracle
 
-A Hangfire storage provider implementation for Oracle Database using Oracle.ManagedDataAccess.Core and Dapper.
+[![CI](https://github.com/wouternijenhuis/Hangfire.Storage.Oracle/actions/workflows/ci.yml/badge.svg)](https://github.com/wouternijenhuis/Hangfire.Storage.Oracle/actions/workflows/ci.yml)
+[![NuGet](https://img.shields.io/nuget/v/DevDad.Hangfire.Oracle.svg)](https://www.nuget.org/packages/DevDad.Hangfire.Oracle)
+[![License](https://img.shields.io/github/license/wouternijenhuis/Hangfire.Storage.Oracle)](LICENSE)
 
-## Features
-
-- **Full Hangfire Storage Implementation**: Implements all required Hangfire storage interfaces
-  - `OracleStorage` : `JobStorage`
-  - `IStorageConnection` for read operations
-  - `IWriteOnlyTransaction` for write operations
-  - `IMonitoringApi` for dashboard and monitoring
-
-- **Oracle Database Support**: Uses Oracle.ManagedDataAccess.Core for reliable Oracle connectivity
-- **Oracle 19c+ Optimizations**: Takes advantage of modern Oracle features:
-  - `FOR UPDATE SKIP LOCKED` for non-blocking job queue polling
-  - `FETCH FIRST N ROWS ONLY` for efficient pagination
-  - MERGE statements for atomic upserts
-  - Sequence caching for improved insert performance
-- **High Performance**: Leverages Dapper async APIs with retry logic
-- **Distributed Locks**: Ensures job processing coordination across multiple servers
-- **Automatic Retry**: Transient database errors are automatically retried with exponential backoff
-- **Connection Pooling**: Optimized connection string settings for ODP.NET
-- **Automatic Schema Management**: Optional automatic database schema creation
-- **Configurable Options**: Extensive configuration options for customization
+Oracle Database storage for Hangfire. Version 1.0.4 is a backward-compatible stabilization release for .NET 8 and .NET 10. It preserves the `DevDad.Hangfire.Oracle` package ID and the `Hangfire.Oracle.Core` namespace and assembly.
 
 ## Requirements
 
 - .NET 8.0 or .NET 10.0
-- **Oracle Database 19c or later** (recommended)
-  - Oracle 12c-18c supported with `UseSkipLocked = false`
-- Hangfire.Core 1.8.x
+- Oracle Database 19c or later
+- A database user that can create tables, sequences, and indexes when automatic schema preparation is enabled
+- `EXECUTE` on `DBMS_LOCK` only when `UseDbmsLock` is enabled
 
-## Installation
-
-Add the package reference to your project:
+## Install
 
 ```xml
-<PackageReference Include="DevDad.Hangfire.Oracle" Version="1.0.0" />
+<PackageReference Include="DevDad.Hangfire.Oracle" Version="1.0.4" />
 ```
-
-Or via Package Manager Console:
 
 ```powershell
-Install-Package DevDad.Hangfire.Oracle
+dotnet add package DevDad.Hangfire.Oracle --version 1.0.4
 ```
 
-## Usage
-
-### Basic Setup
+## Configure
 
 ```csharp
 using Hangfire;
-using DevDad.Hangfire.Oracle;
+using Hangfire.Oracle.Core;
 
-// Configure Hangfire to use Oracle storage
-GlobalConfiguration.Configuration
-    .UseOracleStorage("Data Source=myOracleDB;User Id=hangfire;Password=yourpassword;");
-```
-
-### Advanced Configuration
-
-```csharp
-using Hangfire;
-using DevDad.Hangfire.Oracle;
-
-var options = new OracleStorageOptions
-{
-    // Schema settings
-    SchemaName = "HANGFIRE",              // Optional schema name
-    TablePrefix = "HF_",                   // Table name prefix (default: "HF_")
-    PrepareSchemaIfNecessary = true,       // Auto-create schema
-    
-    // Oracle 19c+ optimizations
-    MinimumDatabaseVersion = OracleDatabaseVersion.Oracle19c,
-    UseSkipLocked = true,                  // Use FOR UPDATE SKIP LOCKED (Oracle 19c+)
-    
-    // Timeouts and intervals
-    InvisibilityTimeout = TimeSpan.FromMinutes(30),
-    QueuePollInterval = TimeSpan.FromSeconds(15),
-    DistributedLockTimeout = TimeSpan.FromMinutes(10),
-    JobExpirationCheckInterval = TimeSpan.FromMinutes(30),
-    CounterAggregationInterval = TimeSpan.FromMinutes(5),
-    SlidingInvisibilityTimeout = TimeSpan.FromMinutes(5),
-    
-    // Performance settings
-    CommandTimeout = 30,                   // SQL command timeout in seconds
-    MaxRetryAttempts = 3,                  // Retry attempts for transient errors
-    RetryDelay = TimeSpan.FromMilliseconds(100),
-    CleanupBatchSize = 1000,               // Batch size for cleanup operations
-    EnableStatementCaching = true,         // Enable ODP.NET statement caching
-    StatementCacheSize = 100,              // Statement cache size
-    
-    // Other settings
-    FetchCount = 1,                        // Jobs to fetch per query
-    UseUtcTime = true                      // Use UTC timestamps
-};
-
-GlobalConfiguration.Configuration
-    .UseOracleStorage("YourConnectionString", options);
-```
-
-### ASP.NET Core Integration
-
-```csharp
-using Hangfire;
-using DevDad.Hangfire.Oracle;
-
-var builder = WebApplication.CreateBuilder(args);
-
-// Add Hangfire services
 builder.Services.AddHangfire(configuration => configuration
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
     .UseRecommendedSerializerSettings()
     .UseOracleStorage(
-        builder.Configuration.GetConnectionString("HangfireOracle"),
+        builder.Configuration.GetConnectionString("HangfireOracle")!,
         new OracleStorageOptions
         {
             PrepareSchemaIfNecessary = true,
-            MinimumDatabaseVersion = OracleDatabaseVersion.Oracle19c,
-            UseSkipLocked = true
+            SchemaName = "HANGFIRE",
+            TablePrefix = "HF_"
         }));
 
 builder.Services.AddHangfireServer();
-
-var app = builder.Build();
-
-app.UseHangfireDashboard();
-app.Run();
 ```
 
-### Connection String Best Practices
-
-The storage automatically enhances connection strings with optimal pooling settings:
+For non-ASP.NET Core applications:
 
 ```csharp
-// Recommended connection string format
-var connectionString = @"
-    Data Source=myOracleDB;
-    User Id=hangfire;
-    Password=yourpassword;
-    Min Pool Size=5;
-    Max Pool Size=100;
-    Connection Lifetime=120;
-    Statement Cache Size=100;
-";
+using Hangfire;
+using Hangfire.Oracle.Core;
+
+GlobalConfiguration.Configuration.UseOracleStorage(
+    "User Id=hangfire;Password=secret;Data Source=localhost/FREEPDB1");
 ```
 
-## Database Schema
+## Schema installation and upgrades
 
-The package will automatically create the required database schema if `PrepareSchemaIfNecessary` is set to `true` (default).
+`PrepareSchemaIfNecessary` defaults to `true`. Startup installs the schema idempotently and records its schema version. A complete 1.0.3 schema is migrated in place to schema version 2; job and Hangfire data are retained.
 
-The following tables are created:
+Stop all Hangfire workers before the first 1.0.4 startup. Back up the Oracle schema, deploy one 1.0.4 instance with schema preparation enabled, verify startup, and then start the remaining workers. See [UPGRADE.md](UPGRADE.md) for the checklist.
 
-- `HF_JOB` - Stores job definitions
-- `HF_JOB_STATE` - Stores job state history
-- `HF_JOB_PARAMETER` - Stores job parameters
-- `HF_JOB_QUEUE` - Stores job queue assignments
-- `HF_SERVER` - Stores registered servers
-- `HF_SET` - Stores sorted sets (scheduled jobs, etc.)
-- `HF_COUNTER` - Stores counters
-- `HF_HASH` - Stores key-value pairs
-- `HF_LIST` - Stores lists
-- `HF_AGGREGATED_COUNTER` - Stores aggregated counters
-- `HF_DISTRIBUTED_LOCK` - Manages distributed locks
+For database-managed deployments, the embedded scripts are also packaged under `contentFiles/any/any/Sql`. Run `Install.sql` with the desired schema and prefix substitutions. Automatic preparation remains the recommended path because it applies versioned migrations.
 
-### Manual Schema Installation
+Oracle identifiers are validated as unquoted identifiers. `SchemaName` and `TablePrefix` may contain letters, digits, `_`, `$`, and `#`; they must begin with a letter and produce identifiers no longer than 128 characters.
 
-If you prefer to create the schema manually, you can run the SQL scripts located in the `Scripts` folder:
+## Options
 
-1. **Install.sql** - Creates all required tables and sequences
-2. **Uninstall.sql** - Drops all Hangfire tables and sequences
+| Option | Default | Purpose |
+| --- | ---: | --- |
+| `SchemaName` | current user | Owner of the Hangfire objects |
+| `TablePrefix` | `HF_` | Prefix for every table, sequence, and index |
+| `PrepareSchemaIfNecessary` | `true` | Install or migrate the schema during storage construction |
+| `MinimumDatabaseVersion` | `Oracle19c` | Supported SQL compatibility floor; 1.0.4 rejects older values |
+| `UseSkipLocked` | `true` | Use concurrent `FOR UPDATE SKIP LOCKED` queue acquisition |
+| `InvisibilityTimeout` | 30 minutes | Time after which an abandoned fetch is made visible |
+| `SlidingInvisibilityTimeout` | 5 minutes | Lease-refresh interval basis for a running fetched job |
+| `QueuePollInterval` | 15 seconds | Delay after an empty queue poll |
+| `FetchCount` | `1` | Maximum immediate acquisition attempts before the poll delay |
+| `TransactionIsolationLevel` | `ReadCommitted` | Isolation used by write transactions |
+| `TransactionTimeout` | 1 minute | Upper bound used for transaction-scoped commands |
+| `CommandTimeout` | 30 seconds | Oracle command timeout; `0` means unlimited |
+| `MaxRetryAttempts` | `3` | Additional retries for classified transient Oracle failures |
+| `RetryDelay` | 100 ms | Initial exponential retry delay |
+| `DistributedLockTimeout` | 10 minutes | Default lock wait/lease duration |
+| `UseDbmsLock` | `false` | Select `DBMS_LOCK` instead of owner-aware table leases |
+| `JobExpirationCheckInterval` | 30 minutes | Expired-record cleanup interval |
+| `CounterAggregationInterval` | 5 minutes | Raw-counter aggregation interval |
+| `CleanupBatchSize` | `1000` | Maximum cleanup/aggregation batch size |
+| `DashboardJobListLimit` | `50000` | Maximum number of rows exposed to dashboard lists |
+| `UseUtcTime` | `true` | Use UTC rather than server-local timestamps |
+| `EnableStatementCaching` | `true` | Add ODP.NET statement-cache settings when absent |
+| `StatementCacheSize` | `50` | Per-connection ODP.NET statement cache size |
 
-## Configuration Options
-
-| Option | Type | Default | Description |
-| ------ | ---- | ------- | ----------- |
-| `SchemaName` | `string?` | `null` | Optional Oracle schema name |
-| `TablePrefix` | `string` | `"HF_"` | Prefix for all table names |
-| `MinimumDatabaseVersion` | `OracleDatabaseVersion` | `Oracle19c` | Minimum Oracle version to target |
-| `UseSkipLocked` | `bool` | `true` | Use FOR UPDATE SKIP LOCKED (Oracle 19c+) |
-| `InvisibilityTimeout` | `TimeSpan` | 30 minutes | Timeout for fetched jobs |
-| `QueuePollInterval` | `TimeSpan` | 15 seconds | Interval between queue polls |
-| `DistributedLockTimeout` | `TimeSpan` | 10 minutes | Timeout for distributed locks |
-| `JobExpirationCheckInterval` | `TimeSpan` | 30 minutes | Interval for job expiration checks |
-| `CounterAggregationInterval` | `TimeSpan` | 5 minutes | Interval for counter aggregation |
-| `PrepareSchemaIfNecessary` | `bool` | `true` | Auto-create database schema |
-| `SlidingInvisibilityTimeout` | `TimeSpan` | 5 minutes | Sliding timeout for jobs |
-| `FetchCount` | `int` | `1` | Number of jobs to fetch per query |
-| `UseUtcTime` | `bool` | `true` | Use UTC for all timestamps |
-| `CommandTimeout` | `int` | `30` | SQL command timeout in seconds |
-| `MaxRetryAttempts` | `int` | `3` | Retry attempts for transient errors |
-| `RetryDelay` | `TimeSpan` | 100ms | Base delay between retries |
-| `CleanupBatchSize` | `int` | `1000` | Batch size for cleanup operations |
-| `EnableStatementCaching` | `bool` | `true` | Enable ODP.NET statement caching |
-| `StatementCacheSize` | `int` | `100` | Number of statements to cache |
-
-## Oracle Version Compatibility
-
-| Oracle Version | Supported | Notes |
-| -------------- | --------- | ----- |
-| Oracle 19c+ | ✅ Full | All features including SKIP LOCKED |
-| Oracle 21c+ | ✅ Full | All features |
-| Oracle 23ai | ✅ Full | All features |
-| Oracle 12c-18c | ⚠️ Limited | Set `UseSkipLocked = false` |
+Invalid identifiers, non-positive durations and sizes, negative timeout/retry values, and unsupported database versions fail during storage construction.
 
 ## Dependencies
 
-- Hangfire.Core 1.8.22
-- Oracle.ManagedDataAccess.Core 23.26.100
-- Dapper 2.1.66
-- Dapper.Oracle 2.0.2
+The 1.0.4 package directly references:
 
-## License
+| Package | Version |
+| --- | --- |
+| Hangfire.Core | 1.8.24 |
+| Oracle.ManagedDataAccess.Core | 23.26.300 |
+| Dapper | 2.1.79 |
+| Newtonsoft.Json | 13.0.3 (pinned transitive Hangfire dependency) |
 
-This project is licensed under the MIT License.
+`Dapper.Oracle` is no longer used or included.
 
-## Contributing
+## Development
 
-Contributions are welcome! Please feel free to submit pull requests or open issues.
+The repository uses the .NET SDK selected by `global.json`, locked NuGet restores, xUnit v3, Microsoft Testing Platform, Oracle Database Free 23 integration tests, package compatibility validation against 1.0.3, and enforced coverage thresholds. See [CONTRIBUTING.md](CONTRIBUTING.md) and [RELEASE.md](RELEASE.md).
 
-## Support
+## Support and security
 
-For issues and questions, please use the [GitHub Issues](https://github.com/wouternijenhuis/Hangfire.Storage.Oracle/issues) page.
+Use [GitHub Issues](https://github.com/wouternijenhuis/Hangfire.Storage.Oracle/issues) for reproducible defects and feature requests. Report vulnerabilities according to [SECURITY.md](SECURITY.md).
+
+Licensed under the [MIT License](LICENSE).

@@ -14,14 +14,22 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
-    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <NuGetAuditLevel>moderate</NuGetAuditLevel>
   </PropertyGroup>
 
   <!-- Deterministic builds for reproducibility -->
   <PropertyGroup>
     <Deterministic>true</Deterministic>
+    <DebugType>portable</DebugType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
   </PropertyGroup>
 
@@ -29,12 +37,15 @@
   <PropertyGroup>
     <Authors>Wouter Nijenhuis</Authors>
     <Company>Wouter Nijenhuis</Company>
-    <Copyright>Copyright © $([System.DateTime]::Now.Year) Wouter Nijenhuis</Copyright>
+    <Copyright>Copyright © 2026 Wouter Nijenhuis</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/wouternijenhuis/Hangfire.Storage.Oracle</PackageProjectUrl>
     <RepositoryUrl>https://github.com/wouternijenhuis/Hangfire.Storage.Oracle</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>See CHANGELOG.md and UPGRADE.md for the complete 1.0.4 release and migration notes.</PackageReleaseNotes>
+    <Version>1.0.4</Version>
+    <PackageVersion>1.0.4</PackageVersion>
   </PropertyGroup>
 
   <!-- Symbol package settings for debugging support -->
