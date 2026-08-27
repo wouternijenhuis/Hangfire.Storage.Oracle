@@ -37,8 +37,8 @@
   <ItemGroup>
     <EmbeddedResource Include="Scripts\Install.sql" />
     <EmbeddedResource Include="Scripts\Uninstall.sql" />
-    <None Include="Scripts\Install.sql" Pack="true" PackagePath="contentFiles\any\any\Sql\" />
-    <None Include="Scripts\Uninstall.sql" Pack="true" PackagePath="contentFiles\any\any\Sql\" />
+    <None Include="Scripts\Install.sql" Pack="true" PackagePath="contentFiles/any/any/Sql/" />
+    <None Include="Scripts\Uninstall.sql" Pack="true" PackagePath="contentFiles/any/any/Sql/" />
   </ItemGroup>
 
   <ItemGroup>
