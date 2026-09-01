@@ -22,7 +22,7 @@
     <PackageVersion Include="Hangfire.Core" Version="1.8.24" />
     <PackageVersion Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageVersion Include="Oracle.ManagedDataAccess.Core" Version="23.26.300" />
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.102" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.400" />
   </ItemGroup>
   <!-- 
     Test Dependencies
