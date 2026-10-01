@@ -37,6 +37,6 @@
     These are automatically included in all projects
   -->
   <ItemGroup Label="Global Analyzers">
-    <GlobalPackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.400" />
+    <GlobalPackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.401" />
   </ItemGroup>
 </Project>
