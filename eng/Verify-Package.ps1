@@ -66,7 +66,7 @@ try {
         $group = $dependencyGroups | Where-Object targetFramework -EQ $framework
         $dependencies = @($group.dependency)
         foreach ($expectedDependency in @(
-            @{ Id = 'Dapper'; Version = '2.1.79' },
+            @{ Id = 'Dapper'; Version = '2.1.89' },
             @{ Id = 'Hangfire.Core'; Version = '1.8.24' },
             @{ Id = 'Oracle.ManagedDataAccess.Core'; Version = '23.26.301' }
         )) {

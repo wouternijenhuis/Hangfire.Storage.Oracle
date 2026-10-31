@@ -18,7 +18,7 @@
     These packages are used by the main library
   -->
   <ItemGroup Label="Production Dependencies">
-    <PackageVersion Include="Dapper" Version="2.1.79" />
+    <PackageVersion Include="Dapper" Version="2.1.89" />
     <PackageVersion Include="Hangfire.Core" Version="1.8.24" />
     <PackageVersion Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageVersion Include="Oracle.ManagedDataAccess.Core" Version="23.26.301" />
@@ -31,7 +31,7 @@
     These packages are used by test projects only
   -->
   <ItemGroup Label="Test Dependencies">
-    <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.10.0" />
+    <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.11.2" />
     <PackageVersion Include="xunit.v3" Version="4.0.0" />
   </ItemGroup>
   <!--
@@ -39,6 +39,6 @@
     These are automatically included in all projects
   -->
   <ItemGroup Label="Global Analyzers">
-    <GlobalPackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.400" />
+    <GlobalPackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.401" />
   </ItemGroup>
 </Project>
