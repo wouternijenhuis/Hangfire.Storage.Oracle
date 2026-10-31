@@ -67,7 +67,7 @@ try {
         $dependencies = @($group.dependency)
         foreach ($expectedDependency in @(
             @{ Id = 'Dapper'; Version = '2.1.89' },
-            @{ Id = 'Hangfire.Core'; Version = '1.8.24' },
+            @{ Id = 'Hangfire.Core'; Version = '1.8.25' },
             @{ Id = 'Oracle.ManagedDataAccess.Core'; Version = '23.26.301' }
         )) {
             $actual = $dependencies | Where-Object id -EQ $expectedDependency.Id
