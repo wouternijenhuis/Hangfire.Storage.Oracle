@@ -31,7 +31,7 @@
     These packages are used by test projects only
   -->
   <ItemGroup Label="Test Dependencies">
-    <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.11.2" />
+    <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.12.0" />
     <PackageVersion Include="xunit.v3" Version="4.0.1" />
   </ItemGroup>
   <!--
