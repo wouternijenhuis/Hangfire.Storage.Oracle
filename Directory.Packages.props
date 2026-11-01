@@ -21,7 +21,7 @@
     <PackageVersion Include="Dapper" Version="2.1.89" />
     <PackageVersion Include="Hangfire.Core" Version="1.8.25" />
     <PackageVersion Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageVersion Include="Oracle.ManagedDataAccess.Core" Version="23.26.301" />
+    <PackageVersion Include="Oracle.ManagedDataAccess.Core" Version="23.26.400" />
     <!-- Transitive via Oracle.ManagedDataAccess.Core; 8.0.1 is affected by CVE-2026-84008 and CVE-2026-70162. -->
     <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="8.0.2" />
     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.401" />
